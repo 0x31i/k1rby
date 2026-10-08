@@ -185,6 +185,73 @@ def _grouptype(v: Any) -> tuple[str, str]:
     return (cat, scope)
 
 
+def _deleg(uac: Any, allowed_to: Any, rbcd: bool = False) -> tuple[str, str, str]:
+    """Resolve delegation into ADRecon's (Type, Protocol, Services)."""
+    services = _s(allowed_to)
+    if _has(uac, "TRUSTED_FOR_DELEGATION"):
+        return ("Unconstrained", "", "")
+    if _has(uac, "TRUSTED_TO_AUTH_FOR_DELEGATION"):
+        return ("Constrained w/ Protocol Transition", "Any", services)
+    if allowed_to:
+        return ("Constrained", "Kerberos", services)
+    if rbcd:
+        return ("Resource-Based Constrained", "Kerberos", "")
+    return ("", "", "")
+
+
+def _enc_types(v: Any) -> tuple[bool, bool, bool, bool]:
+    """msDS-SupportedEncryptionTypes bits -> (DES, RC4, AES128, AES256)."""
+    try:
+        e = int(v)
+    except (TypeError, ValueError):
+        return (False, False, False, False)
+    return (bool(e & 0x3), bool(e & 0x4), bool(e & 0x8), bool(e & 0x10))
+
+
+def _exp_days(v: Any) -> Any:
+    """Days until accountExpires (negative = already expired). '' if never/unknown."""
+    try:
+        t = int(v)
+        if t in (0, 9223372036854775807):
+            return ""
+    except (TypeError, ValueError):
+        if not isinstance(v, datetime.datetime):
+            return ""
+    d = _dt(v)
+    return (d - datetime.datetime.utcnow()).days if d else ""
+
+
+def smb_posture(host: str, port: int = 445, timeout: int = 4) -> dict:
+    """Active (negotiate-only, NO login) SMB dialect + signing probe — matches ADRecon's DC SMB
+    columns. One TCP connect per dialect, no authentication, no writes. Best-effort: returns all
+    False if impacket is absent or 445 is unreachable. Gated by --no-smb at the CLI."""
+    res = {"smbPortOpen": False, "smb1": False, "smb2_202": False, "smb2_210": False,
+           "smb3_300": False, "smb3_302": False, "smb3_311": False, "smbSigning": ""}
+    try:
+        from impacket.smbconnection import SMBConnection
+        from impacket.smb import SMB_DIALECT
+        from impacket.smb3structs import (SMB2_DIALECT_002, SMB2_DIALECT_21,
+                                          SMB2_DIALECT_30, SMB2_DIALECT_302, SMB2_DIALECT_311)
+    except Exception:  # noqa: BLE001
+        return res
+    dialects = [("smb1", SMB_DIALECT), ("smb2_202", SMB2_DIALECT_002),
+                ("smb2_210", SMB2_DIALECT_21), ("smb3_300", SMB2_DIALECT_30),
+                ("smb3_302", SMB2_DIALECT_302), ("smb3_311", SMB2_DIALECT_311)]
+    for key, dialect in dialects:
+        try:
+            c = SMBConnection(host, host, sess_port=port, preferredDialect=dialect, timeout=timeout)
+            res["smbPortOpen"] = True
+            res[key] = True
+            try:
+                res["smbSigning"] = "required" if c.isSigningRequired() else "not required"
+            except Exception:  # noqa: BLE001
+                pass
+            c.close()
+        except Exception:  # noqa: BLE001
+            continue
+    return res
+
+
 # ---- AD-integrated DNS record blob parser (dnsRecord attribute) --------------------------------
 _DNS_TYPE = {1: "A", 2: "NS", 5: "CNAME", 6: "SOA", 12: "PTR", 15: "MX",
              16: "TXT", 28: "AAAA", 33: "SRV", 0: "TOMBSTONE"}
@@ -269,6 +336,7 @@ class Collector:
         self._groups_cache: list[dict] | None = None
         self._dns_a_cache: dict[str, str] | None = None
         self._domain_sid: str | None = None
+        self.smb = True  # DC SMB posture probe (active negotiate); CLI --no-smb disables
 
     def close(self) -> None:
         try:
@@ -395,20 +463,96 @@ class Collector:
             "appliesTo": _s(r.get("msDS-PSOAppliesTo")),
         } for r in rows]
 
+    def _fsmo(self) -> dict[str, str]:
+        """role -> DC short name holding it (Infra/Naming/Schema/RID/PDC)."""
+        targets = {
+            "PDC": ("BASE", self.base),
+            "RID": ("BASE", f"CN=RID Manager$,CN=System,{self.base}"),
+            "Infra": ("BASE", f"CN=Infrastructure,{self.base}"),
+            "Schema": ("BASE", f"CN=Schema,CN=Configuration,{self.base}"),
+            "Naming": ("BASE", f"CN=Partitions,CN=Configuration,{self.base}"),
+        }
+        out = {}
+        for role, (_scope, b) in targets.items():
+            try:
+                self.conn.search(b, "(objectClass=*)", search_scope="BASE",
+                                 attributes=["fSMORoleOwner"])
+                owner = self.conn.entries[0]["fSMORoleOwner"].value if self.conn.entries else ""
+            except Exception:  # noqa: BLE001
+                owner = ""
+            # owner = 'CN=NTDS Settings,CN=<DC>,CN=Servers,CN=<site>,...'
+            dcname = ""
+            parts = _s(owner).split(",")
+            for i, p in enumerate(parts):
+                if p.upper().startswith("CN=NTDS SETTINGS") and i + 1 < len(parts):
+                    dcname = parts[i + 1].split("=", 1)[-1]
+                    break
+            out[role] = dcname
+        return out
+
+    def _dc_sites(self) -> dict[str, str]:
+        """server CN (DC short name) -> site name, from the Sites container."""
+        out = {}
+        try:
+            self.conn.search(f"CN=Sites,CN=Configuration,{self.base}", "(objectClass=server)",
+                             search_scope=SUBTREE, attributes=["cn"], paged_size=200)
+            for e in self.conn.entries:
+                dn = str(e.entry_dn)
+                cn = _s(e["cn"].value if "cn" in e else "")
+                # site = CN right under CN=Sites
+                parts = dn.split(",")
+                site = ""
+                for i, p in enumerate(parts):
+                    if p.upper() == "CN=SITES" and i >= 1:
+                        site = parts[i - 1].split("=", 1)[-1]
+                        break
+                if cn:
+                    out[cn.upper()] = site
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
     def domain_controllers(self) -> list[dict]:
         flt = ("(&(objectCategory=computer)(userAccountControl:1.2.840.113556.1.4.803:=8192))")
         rows = self._search(flt, ["name", "dNSHostName", "operatingSystem",
                                    "operatingSystemVersion", "lastLogonTimestamp", "objectSid"])
         amap = self._dns_a_map()
-        return [{
-            "name": _s(r.get("name")),
-            "dnsHostName": _s(r.get("dNSHostName")),
-            "ipv4": amap.get(_s(r.get("dNSHostName")).lower(), ""),
-            "os": _s(r.get("operatingSystem")),
-            "osVersion": _s(r.get("operatingSystemVersion")),
-            "lastLogon": _ft(r.get("lastLogonTimestamp")),
-            "sid": _sid(r.get("objectSid")),
-        } for r in rows]
+        fsmo = self._fsmo()
+        sites = self._dc_sites()
+        out = []
+        for r in rows:
+            name = _s(r.get("name"))
+            ipv4 = amap.get(_s(r.get("dNSHostName")).lower(), "")
+            row = {
+                "domain": self.domain,
+                "site": sites.get(name.upper(), ""),
+                "name": name,
+                "hostname": _s(r.get("dNSHostName")),
+                "ipv4": ipv4,
+                "os": _s(r.get("operatingSystem")),
+                "osVersion": _s(r.get("operatingSystemVersion")),
+                "infra": fsmo.get("Infra", "").upper() == name.upper(),
+                "naming": fsmo.get("Naming", "").upper() == name.upper(),
+                "schema": fsmo.get("Schema", "").upper() == name.upper(),
+                "rid": fsmo.get("RID", "").upper() == name.upper(),
+                "pdc": fsmo.get("PDC", "").upper() == name.upper(),
+                "lastLogon": _ft(r.get("lastLogonTimestamp")),
+                "sid": _sid(r.get("objectSid")),
+            }
+            if self.smb:
+                probe = smb_posture(ipv4 or _s(r.get("dNSHostName")))
+                row.update({
+                    "smbPortOpen": probe["smbPortOpen"],
+                    "smb1(NT LM 0.12)": probe["smb1"],
+                    "smb2(0x0202)": probe["smb2_202"],
+                    "smb2(0x0210)": probe["smb2_210"],
+                    "smb3(0x0300)": probe["smb3_300"],
+                    "smb3(0x0302)": probe["smb3_302"],
+                    "smb3(0x0311)": probe["smb3_311"],
+                    "smbSigning": probe["smbSigning"],
+                })
+            out.append(row)
+        return out
 
     def trusts(self) -> list[dict]:
         rows = self._search("(objectClass=trustedDomain)",
@@ -425,13 +569,13 @@ class Collector:
     def users(self) -> list[dict]:
         if self._users_cache is not None:
             return self._users_cache
-        attrs = ["sAMAccountName", "userPrincipalName", "userAccountControl", "adminCount",
-                 "servicePrincipalName", "pwdLastSet", "lastLogonTimestamp", "whenCreated",
-                 "whenChanged", "memberOf", "description", "msDS-AllowedToDelegateTo",
-                 "objectSid", "sIDHistory", "primaryGroupID", "accountExpires",
-                 "mail", "manager", "department", "title", "company", "mobile",
-                 "homeDirectory", "profilePath", "scriptPath",
-                 "msDS-SupportedEncryptionTypes"]
+        attrs = ["sAMAccountName", "userPrincipalName", "displayName", "givenName", "initials",
+                 "sn", "co", "userAccountControl", "adminCount", "servicePrincipalName",
+                 "pwdLastSet", "lastLogonTimestamp", "logonCount", "whenCreated", "whenChanged",
+                 "memberOf", "description", "info", "userWorkstations",
+                 "msDS-AllowedToDelegateTo", "objectSid", "sIDHistory", "primaryGroupID",
+                 "accountExpires", "mail", "manager", "department", "title", "company", "mobile",
+                 "homeDirectory", "profilePath", "scriptPath", "msDS-SupportedEncryptionTypes"]
         raw = self._search("(&(objectCategory=person)(objectClass=user))", attrs)
         out = []
         for r in raw:
@@ -439,13 +583,13 @@ class Collector:
             spn = r.get("servicePrincipalName")
             dn = r.get("_dn") or ""
             pls = r.get("pwdLastSet")
-            enc = r.get("msDS-SupportedEncryptionTypes")
-            try:
-                enc = int(enc) if enc not in (None, "") else None
-            except (TypeError, ValueError):
-                enc = None
+            llt = r.get("lastLogonTimestamp")
+            page = _age_days(pls)
+            des, rc4, aes128, aes256 = _enc_types(r.get("msDS-SupportedEncryptionTypes"))
+            dtype, dproto, dsvc = _deleg(uac, r.get("msDS-AllowedToDelegateTo"))
             out.append({
                 "sAMAccountName": _s(r.get("sAMAccountName")),
+                "name": _s(r.get("displayName")) or _cn(dn),
                 "userPrincipalName": _s(r.get("userPrincipalName")),
                 "enabled": not _has(uac, "ACCOUNTDISABLE"),
                 "adminCount": _s(r.get("adminCount")),
@@ -461,30 +605,46 @@ class Collector:
                 "cannotChangePwd": _has(uac, "PASSWD_CANT_CHANGE"),
                 "reversiblePwdEncryption": _has(uac, "ENCRYPTED_TEXT_PWD_ALLOWED"),
                 "smartcardRequired": _has(uac, "SMARTCARD_REQUIRED"),
+                "delegationPermitted": not _has(uac, "NOT_DELEGATED"),
                 "kerberosDESOnly": _has(uac, "USE_DES_KEY_ONLY"),
+                "kerberosRC4": rc4,
+                "kerberosAES128": aes128,
+                "kerberosAES256": aes256,
                 "accountLocked": _has(uac, "LOCKOUT"),
                 "passwordExpired": _has(uac, "PASSWORD_EXPIRED"),
+                "neverLoggedIn": (not llt) and (str(r.get("logonCount") or "0") == "0"),
                 "unconstrainedDeleg": _has(uac, "TRUSTED_FOR_DELEGATION"),
                 "constrainedDeleg": _s(r.get("msDS-AllowedToDelegateTo")),
+                "delegationType": dtype,
+                "delegationProtocol": dproto,
+                "delegationServices": dsvc,
                 "pwdLastSet": _ft(pls),
-                "pwdAgeDays": _age_days(pls),
-                "lastLogon": _ft(r.get("lastLogonTimestamp")),
-                "logonAgeDays": _age_days(r.get("lastLogonTimestamp")),
-                "dormant": (isinstance(_age_days(r.get("lastLogonTimestamp")), int)
-                            and _age_days(r.get("lastLogonTimestamp")) > 90),
+                "pwdAgeDays": page,
+                "pwdAgeOver90": (isinstance(page, int) and page > 90),
+                "lastLogon": _ft(llt),
+                "logonAgeDays": _age_days(llt),
+                "dormant": (isinstance(_age_days(llt), int) and _age_days(llt) > 90),
                 "accountExpires": _ft(r.get("accountExpires")),
+                "accountExpiresDays": _exp_days(r.get("accountExpires")),
+                "logonWorkstations": _s(r.get("userWorkstations")),
                 "whenCreated": _s(r.get("whenCreated")),
                 "whenChanged": _s(r.get("whenChanged")),
                 "description": _s(r.get("description")),
+                "info": _s(r.get("info")),
                 "title": _s(r.get("title")),
                 "department": _s(r.get("department")),
                 "company": _s(r.get("company")),
                 "manager": _cn(_s(r.get("manager"))),
                 "email": _s(r.get("mail")),
                 "mobile": _s(r.get("mobile")),
+                "firstName": _s(r.get("givenName")),
+                "middleName": _s(r.get("initials")),
+                "lastName": _s(r.get("sn")),
+                "country": _s(r.get("co")),
                 "homeDirectory": _s(r.get("homeDirectory")),
                 "profilePath": _s(r.get("profilePath")),
                 "scriptPath": _s(r.get("scriptPath")),
+                "userAccountControl": _s(uac),
                 "distinguishedName": dn,
                 "canonicalName": _canonical(dn),
                 "uacFlags": "; ".join(uac_flags(uac)),
@@ -496,9 +656,10 @@ class Collector:
     def computers(self) -> list[dict]:
         if self._computers_cache is not None:
             return self._computers_cache
-        attrs = ["name", "dNSHostName", "operatingSystem", "operatingSystemVersion",
-                 "lastLogonTimestamp", "userAccountControl", "pwdLastSet", "whenCreated",
-                 "whenChanged", "objectSid", "sIDHistory", "primaryGroupID", "description",
+        attrs = ["name", "sAMAccountName", "dNSHostName", "operatingSystem",
+                 "operatingSystemVersion", "lastLogonTimestamp", "userAccountControl",
+                 "pwdLastSet", "whenCreated", "whenChanged", "objectSid", "sIDHistory",
+                 "primaryGroupID", "description", "mS-DS-CreatorSID",
                  "msDS-AllowedToActOnBehalfOfOtherIdentity", "msDS-AllowedToDelegateTo"]
         raw = self._search("(objectClass=computer)", attrs)
         amap = self._dns_a_map()
@@ -506,8 +667,13 @@ class Collector:
         for r in raw:
             uac = r.get("userAccountControl")
             dn = r.get("_dn") or ""
+            pls = r.get("pwdLastSet")
+            page = _age_days(pls)
+            rbcd = bool(r.get("msDS-AllowedToActOnBehalfOfOtherIdentity"))
+            dtype, dproto, dsvc = _deleg(uac, r.get("msDS-AllowedToDelegateTo"), rbcd=rbcd)
             out.append({
                 "name": _s(r.get("name")),
+                "sAMAccountName": _s(r.get("sAMAccountName")),
                 "dnsHostName": _s(r.get("dNSHostName")),
                 "ipv4": amap.get(_s(r.get("dNSHostName")).lower(), ""),
                 "os": _s(r.get("operatingSystem")),
@@ -515,17 +681,23 @@ class Collector:
                 "enabled": not _has(uac, "ACCOUNTDISABLE"),
                 "sid": _sid(r.get("objectSid")),
                 "sidHistory": _sid(r.get("sIDHistory")) if r.get("sIDHistory") else "",
+                "msDSCreatorSid": _sid(r.get("mS-DS-CreatorSID")) if r.get("mS-DS-CreatorSID") else "",
                 "primaryGroupID": _s(r.get("primaryGroupID")),
                 "lastLogon": _ft(r.get("lastLogonTimestamp")),
                 "logonAgeDays": _age_days(r.get("lastLogonTimestamp")),
                 "dormant": (isinstance(_age_days(r.get("lastLogonTimestamp")), int)
                             and _age_days(r.get("lastLogonTimestamp")) > 90),
-                "pwdLastSet": _ft(r.get("pwdLastSet")),
-                "pwdAgeDays": _age_days(r.get("pwdLastSet")),
+                "pwdLastSet": _ft(pls),
+                "pwdAgeDays": page,
+                "pwdAgeOver30": (isinstance(page, int) and page > 30),
                 "unconstrainedDeleg": _has(uac, "TRUSTED_FOR_DELEGATION"),
                 "constrainedDeleg": _s(r.get("msDS-AllowedToDelegateTo")),
-                "rbcd": bool(r.get("msDS-AllowedToActOnBehalfOfOtherIdentity")),
+                "delegationType": dtype,
+                "delegationProtocol": dproto,
+                "delegationServices": dsvc,
+                "rbcd": rbcd,
                 "description": _s(r.get("description")),
+                "userAccountControl": _s(uac),
                 "whenCreated": _s(r.get("whenCreated")),
                 "whenChanged": _s(r.get("whenChanged")),
                 "distinguishedName": dn,

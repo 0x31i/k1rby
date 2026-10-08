@@ -47,6 +47,10 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--dns-tcp", action="store_true",
                    help="force DNS over TCP for bloodhound-python — required when running k1rby "
                         "through a SOCKS pivot (e.g. `proxychains k1rby ...`)")
+    s.add_argument("--no-smb", action="store_true",
+                   help="skip the DC SMB posture probe (SMB1/dialects/signing). The probe is an "
+                        "active negotiate-only connection to 445 (no auth); --no-smb keeps the run "
+                        "pure read-only LDAP.")
     s.add_argument("--roast", action="store_true",
                    help="ALSO request AS-REP/Kerberoast tickets (active, logged; OFF by default so "
                         "the standard run stays pure read-only enumeration)")
@@ -71,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:  # noqa: BLE001
         sys.stderr.write(f"[!] bind failed: {e}\n")
         return 2
+    c.smb = not args.no_smb
 
     # order defines sheet order (Summary is injected first by report.build)
     sections = {}
