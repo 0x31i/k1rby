@@ -24,10 +24,13 @@ def _autosize(ws, rows: list[dict]) -> None:
         ws.column_dimensions[get_column_letter(i)].width = min(max(width + 2, 10), 70)
 
 
-def _sheet(wb: Workbook, name: str, rows: list[dict], risk_when=None) -> int:
+def _sheet(wb: Workbook, name: str, rows: list[dict], risk_when=None,
+           empty_msg: str | None = None) -> int:
     ws = wb.create_sheet(name[:31])
     if not rows:
-        ws["A1"] = "(no results)"
+        cell = ws["A1"]
+        cell.value = empty_msg or "(no results)"
+        cell.font = Font(italic=True, color="5A6B86")
         return 0
     cols = [c for c in rows[0].keys() if not c.startswith("_")]
     for i, c in enumerate(cols, 1):
@@ -92,9 +95,34 @@ def build(path: str, domain: str, sections: dict[str, list[dict]],
         "LAPS": lambda r: bool(r.get("lapsPassword")),
     }
 
+    # Explain *why* a security-sensitive tab is empty — "clean" vs "not scanned" ambiguity.
+    n_users = len(sections.get("Users", []))
+    n_comp = len(sections.get("Computers", []))
+    empty_msgs = {
+        "Kerberoastable":
+            f"No kerberoastable accounts — checked {n_users} users; none have a service SPN "
+            f"(krbtgt is excluded by design). A clean result.",
+        "AS-REP Roastable":
+            f"No AS-REP-roastable accounts — checked {n_users} users; none have Kerberos "
+            f"pre-authentication disabled (DONT_REQ_PREAUTH). A clean result.",
+        "LAPS":
+            f"No readable LAPS passwords — checked {n_comp} computers; LAPS is either not "
+            f"deployed or not readable by this account. (Absence here is not proof LAPS is absent.)",
+        "Trusts":
+            "No domain or forest trusts are configured.",
+        "Delegation":
+            f"No Kerberos delegation configured — checked {n_users} users and {n_comp} "
+            f"computers; none have unconstrained, constrained, or resource-based delegation.",
+        "Password Policies (FGPP)":
+            "No fine-grained password policies defined — only the default domain policy applies "
+            "(see the Domain and Password Policy (Compliance) tabs).",
+        "Privileged Users":
+            f"No accounts flagged adminCount=1 — checked {n_users} users.",
+    }
+
     counts: dict[str, int] = {}
     for name, rows in sections.items():
-        counts[name] = _sheet(wb, name, rows, risk.get(name))
+        counts[name] = _sheet(wb, name, rows, risk.get(name), empty_msg=empty_msgs.get(name))
 
     # ---- Findings tab (after Summary) ----
     if findings:
@@ -102,7 +130,7 @@ def build(path: str, domain: str, sections: dict[str, list[dict]],
 
     # ---- Summary tab (first) ----
     summ = wb.create_sheet("Summary", 0)
-    summ["A1"] = f"k1rby — AD recon: {domain}"
+    summ["A1"] = f"Active Directory Assessment — {domain}"
     summ["A1"].font = _TITLE
     if score is not None:
         summ["A2"] = f"Posture score: {score}/100   ·   {len(findings or [])} findings"
