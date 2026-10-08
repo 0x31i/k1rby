@@ -34,14 +34,22 @@ pipx install bloodhound-ce netexec certipy-ad
 k1rby scan example.local -u operator -p 'password' --dc 10.0.0.10 -o example-ad.xlsx
 ```
 
-Options: `--ssl` (LDAPS 636), `--no-bloodhound`, `--no-external` (ldap3 only).
+Options: `--ssl` (LDAPS 636), `--no-bloodhound`, `--no-external` (ldap3 only), `--roast` (see below).
+
+**The default run is pure read-only enumeration.** `--roast` is the one knob that goes *active*:
+it has `netexec` request AS-REP / TGS (Kerberoast) tickets — non-destructive and no lockout, but
+it hits the KDC and is logged, so it's off by default. k1rby already *identifies* roastable
+accounts (SPN / `DONT_REQ_PREAUTH`) over LDAP without requesting anything.
 
 ## What you get
 
-- **`<domain>-k1rby.xlsx`** — Summary tab + one sheet each: Domain, Password Policies (FGPP),
-  Domain Controllers, Trusts, Users (UAC flags decoded), Kerberoastable, AS-REP Roastable,
-  Privileged Users, Delegation (unconstrained/constrained/RBCD), Computers (OS, LAPS, delegation),
-  Groups, Privileged Members, OUs, GPOs. Risky rows are shaded.
+- **`<domain>-k1rby.xlsx`** — Summary tab + one sheet each (ADRecon-parity): Domain, Forest,
+  Password Policies (FGPP), Domain Controllers, Trusts, **Sites**, **Subnets**, Users (UAC flags
+  decoded), Kerberoastable, AS-REP Roastable, Privileged Users, Delegation (unconstrained/
+  constrained/RBCD), Computers (OS, delegation), **LAPS** (readable local-admin passwords),
+  Groups, **Group Members** (all groups), Privileged Members, OUs, GPOs, **GPO Links** (gPLinks),
+  **DNS Records** (AD-integrated). Risky rows are shaded.
+  *ACLs/DACLs are collected by the bundled BloodHound run (the graph), not duplicated into the xlsx.*
 - **`bloodhound/`** — BloodHound `DCOnly` collection (`--zip`). Load it into the BloodHound CE GUI
   for attack-path analysis — k1rby collects it, the graph lives where it belongs.
 - **`nxc-ldap.txt` / `certipy-adcs.txt`** — password policy, roastable lists, and AD CS / ESC

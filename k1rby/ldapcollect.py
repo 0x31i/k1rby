@@ -326,3 +326,110 @@ class Collector:
                  "pwdNeverExpires": u["pwdNeverExpires"], "lastLogon": u["lastLogon"],
                  "description": u["description"]}
                 for u in self.users() if str(u["adminCount"]) == "1"]
+
+    # ---- ADRecon-parity collectors ------------------------------------------------------------
+    def forest_info(self) -> list[dict]:
+        info = self.server.info
+        other = getattr(info, "other", {}) or {}
+        g = lambda k: _s((other.get(k) or [""])[0]) if other.get(k) else ""  # noqa: E731
+        return [{
+            "domain": self.domain,
+            "rootDomainNC": g("rootDomainNamingContext"),
+            "schemaNC": _s(getattr(info, "schema_entry", "")),
+            "forestFunctionality": g("forestFunctionality"),
+            "domainFunctionality": g("domainFunctionality"),
+            "dcFunctionality": g("domainControllerFunctionality"),
+            "namingContexts": _s(getattr(info, "naming_contexts", "")),
+            "dnsHostName": g("dnsHostName"),
+        }]
+
+    def sites(self) -> list[dict]:
+        base = f"CN=Sites,CN=Configuration,{self.base}"
+        try:
+            rows = self._search("(objectClass=site)", ["name", "description", "whenCreated"], base=base)
+        except Exception:  # noqa: BLE001
+            return []
+        return [{"name": _s(r.get("name")), "description": _s(r.get("description")),
+                 "created": _s(r.get("whenCreated"))} for r in rows]
+
+    def subnets(self) -> list[dict]:
+        base = f"CN=Subnets,CN=Sites,CN=Configuration,{self.base}"
+        try:
+            rows = self._search("(objectClass=subnet)", ["name", "siteObject", "description"], base=base)
+        except Exception:  # noqa: BLE001
+            return []
+        return [{"subnet": _s(r.get("name")), "site": _s(r.get("siteObject")),
+                 "description": _s(r.get("description"))} for r in rows]
+
+    def group_members_all(self) -> list[dict]:
+        """Every group -> every direct member (ADRecon's GroupMembers)."""
+        self.conn.search(self.base, "(objectClass=group)", search_scope=SUBTREE,
+                         attributes=["cn", "member"], paged_size=500)
+        out = []
+        for e in self.conn.entries:
+            g = _s(e["cn"].value if "cn" in e else "")
+            members = e["member"].value if "member" in e else []
+            members = members if isinstance(members, list) else ([members] if members else [])
+            for m in members:
+                out.append({"group": g, "memberDN": _s(m)})
+        return out
+
+    def gpo_links(self) -> list[dict]:
+        import re
+        # GUID -> GPO display name
+        self.conn.search(self.base, "(objectClass=groupPolicyContainer)", search_scope=SUBTREE,
+                         attributes=["cn", "displayName"], paged_size=500)
+        gmap = {}
+        for e in self.conn.entries:
+            cn = _s(e["cn"].value if "cn" in e else "").strip("{}").upper()
+            gmap[cn] = _s(e["displayName"].value if "displayName" in e else "")
+        rows = self._search("(|(objectClass=organizationalUnit)(objectClass=domainDNS))",
+                            ["gPLink", "name"])
+        out = []
+        for r in rows:
+            gpl = r.get("gPLink")
+            if not gpl:
+                continue
+            for guid in re.findall(r"\{([0-9A-Fa-f-]{36})\}", str(gpl)):
+                out.append({"linkedTo": _s(r.get("_dn")), "gpoName": gmap.get(guid.upper(), "(unknown)"),
+                            "gpoGUID": guid})
+        return out
+
+    def dns_records(self) -> list[dict]:
+        """AD-integrated DNS nodes (best-effort across the usual partitions)."""
+        out, seen = [], set()
+        bases = [f"CN=MicrosoftDNS,DC=DomainDnsZones,{self.base}",
+                 f"CN=MicrosoftDNS,DC=ForestDnsZones,{self.base}",
+                 f"CN=MicrosoftDNS,CN=System,{self.base}"]
+        for b in bases:
+            try:
+                rows = self._search("(objectClass=dnsNode)", ["name", "dc"], base=b)
+            except Exception:  # noqa: BLE001
+                continue
+            for r in rows:
+                rec = _s(r.get("name") or r.get("dc"))
+                zone = r.get("_dn", "").split(",DC=")[1].split(",")[0] if ",DC=" in r.get("_dn", "") else ""
+                key = (zone, rec)
+                if rec and key not in seen:
+                    seen.add(key)
+                    out.append({"zone": zone, "record": rec})
+            if out:
+                break
+        return out[:10000]
+
+    def laps(self) -> list[dict]:
+        """Dump LAPS passwords THIS account can read (legacy ms-Mcs-AdmPwd + Windows LAPS).
+        A populated value here is itself a finding: the operator can read local-admin passwords."""
+        out = []
+        for pwd_attr, exp_attr in (("ms-Mcs-AdmPwd", "ms-Mcs-AdmPwdExpirationTime"),
+                                   ("msLAPS-Password", "msLAPS-PasswordExpirationTime")):
+            try:
+                rows = self._search("(objectClass=computer)", ["name", pwd_attr, exp_attr])
+            except Exception:  # noqa: BLE001
+                continue
+            for r in rows:
+                val = r.get(pwd_attr)
+                if val:
+                    out.append({"computer": _s(r.get("name")), "lapsPassword": _s(val),
+                                "expires": _ft(r.get(exp_attr)), "source": pwd_attr})
+        return out

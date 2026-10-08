@@ -39,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--port", type=int, default=None)
     s.add_argument("--no-bloodhound", action="store_true", help="skip bloodhound-python collection")
     s.add_argument("--no-external", action="store_true", help="skip ALL external tools (ldap3 only)")
+    s.add_argument("--roast", action="store_true",
+                   help="ALSO request AS-REP/Kerberoast tickets (active, logged; OFF by default so "
+                        "the standard run stays pure read-only enumeration)")
 
     args = ap.parse_args(argv)
     if args.cmd != "scan":
@@ -63,19 +66,26 @@ def main(argv: list[str] | None = None) -> int:
     sections = {}
     steps = [
         ("Domain", c.domain_info),
+        ("Forest", c.forest_info),
         ("Password Policies (FGPP)", c.password_policies_fgpp),
         ("Domain Controllers", c.domain_controllers),
         ("Trusts", c.trusts),
+        ("Sites", c.sites),
+        ("Subnets", c.subnets),
         ("Users", c.users),
         ("Kerberoastable", c.kerberoastable),
         ("AS-REP Roastable", c.asrep_roastable),
         ("Privileged Users", c.privileged_users),
         ("Delegation", c.delegation),
         ("Computers", c.computers),
+        ("LAPS", c.laps),
         ("Groups", c.groups),
+        ("Group Members", c.group_members_all),
         ("Privileged Members", c.privileged_group_members),
         ("OUs", c.ous),
         ("GPOs", c.gpos),
+        ("GPO Links", c.gpo_links),
+        ("DNS Records", c.dns_records),
     ]
     for name, fn in steps:
         try:
@@ -92,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         from . import external as ext
         sys.stderr.write("[*] external collectors (best-effort, read-only)...\n")
         external = ext.run_all(outdir, args.dc, args.domain, args.username, args.password,
-                               with_bloodhound=not args.no_bloodhound)
+                               with_bloodhound=not args.no_bloodhound, roast=args.roast)
         for tool, status in external.items():
             sys.stderr.write(f"[+] {tool}: {status}\n")
 

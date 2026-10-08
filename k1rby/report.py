@@ -68,6 +68,7 @@ def build(path: str, domain: str, sections: dict[str, list[dict]],
         "AS-REP Roastable": lambda r: True,
         "Delegation": lambda r: "unconstrained" in str(r.get("delegation", "")),
         "Privileged Users": lambda r: r.get("pwdNeverExpires"),
+        "LAPS": lambda r: bool(r.get("lapsPassword")),
     }
 
     counts: dict[str, int] = {}

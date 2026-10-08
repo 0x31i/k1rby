@@ -46,22 +46,29 @@ def bloodhound(outdir: str, dc: str, domain: str, user: str, password: str) -> s
     return f"ran rc={rc}: {out.strip().splitlines()[-1] if out.strip() else 'no output'}"
 
 
-def nxc_ldap(outdir: str, dc: str, domain: str, user: str, password: str) -> str:
-    """Password policy + a couple of safe LDAP enum signals nxc surfaces cleanly."""
+def nxc_ldap(outdir: str, dc: str, domain: str, user: str, password: str,
+             roast: bool = False) -> str:
+    """Password policy (read-only) by default. roast=True ALSO requests AS-REP/TGS tickets —
+    that is ACTIVE (non-destructive, no lockout, but it hits the KDC and is logged), so it is
+    opt-in and off by default to keep the standard run pure read-only enumeration. k1rby's LDAP
+    core already *identifies* roastable accounts (SPN / DONT_REQ_PREAUTH) without requesting
+    anything."""
     if not _have("nxc") and not _have("netexec"):
         return "skipped (netexec not installed)"
     binary = "nxc" if _have("nxc") else "netexec"
     logf = os.path.join(outdir, "nxc-ldap.txt")
+    jobs = [("pass-pol", ["--pass-pol"])]   # read-only LDAP
+    if roast:   # opt-in, active
+        jobs += [("asreproast", ["--asreproast", os.path.join(outdir, "asrep.txt")]),
+                 ("kerberoast", ["--kerberoasting", os.path.join(outdir, "kerb.txt")])]
     collected = []
-    for label, extra in [("pass-pol", ["--pass-pol"]),
-                         ("asreproast", ["--asreproast", os.path.join(outdir, "asrep.txt")]),
-                         ("kerberoast", ["--kerberoasting", os.path.join(outdir, "kerb.txt")])]:
+    for label, extra in jobs:
         rc, out = _run([binary, "ldap", dc, "-u", user, "-p", password, "-d", domain] + extra,
                        cwd=outdir, timeout=300)
         collected.append(f"===== {label} (rc={rc}) =====\n{out}\n")
     with open(logf, "w", encoding="utf-8") as fh:
         fh.write("\n".join(collected))
-    return f"ok -> {logf}"
+    return f"ok -> {logf}" + ("" if roast else " (pass-pol only; --roast for ticket requests)")
 
 
 def certipy_find(outdir: str, dc: str, domain: str, user: str, password: str) -> str:
@@ -79,10 +86,10 @@ def certipy_find(outdir: str, dc: str, domain: str, user: str, password: str) ->
 
 
 def run_all(outdir: str, dc: str, domain: str, user: str, password: str,
-            with_bloodhound: bool = True) -> dict[str, str]:
+            with_bloodhound: bool = True, roast: bool = False) -> dict[str, str]:
     results: dict[str, str] = {}
     if with_bloodhound:
         results["bloodhound-python (DCOnly)"] = bloodhound(outdir, dc, domain, user, password)
-    results["netexec ldap"] = nxc_ldap(outdir, dc, domain, user, password)
+    results["netexec ldap"] = nxc_ldap(outdir, dc, domain, user, password, roast=roast)
     results["certipy find"] = certipy_find(outdir, dc, domain, user, password)
     return results
