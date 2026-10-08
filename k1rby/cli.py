@@ -44,6 +44,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="skip TLS cert validation (e.g. LDAPS reached through a port-forward)")
     s.add_argument("--no-bloodhound", action="store_true", help="skip bloodhound-python collection")
     s.add_argument("--no-external", action="store_true", help="skip ALL external tools (ldap3 only)")
+    s.add_argument("--dns-tcp", action="store_true",
+                   help="force DNS over TCP for bloodhound-python — required when running k1rby "
+                        "through a SOCKS pivot (e.g. `proxychains k1rby ...`)")
     s.add_argument("--roast", action="store_true",
                    help="ALSO request AS-REP/Kerberoast tickets (active, logged; OFF by default so "
                         "the standard run stays pure read-only enumeration)")
@@ -109,7 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         from . import external as ext
         sys.stderr.write("[*] external collectors (best-effort, read-only)...\n")
         external = ext.run_all(outdir, args.dc, args.domain, args.username, args.password,
-                               with_bloodhound=not args.no_bloodhound, roast=args.roast)
+                               with_bloodhound=not args.no_bloodhound, roast=args.roast,
+                               dns_tcp=args.dns_tcp)
         for tool, status in external.items():
             sys.stderr.write(f"[+] {tool}: {status}\n")
 

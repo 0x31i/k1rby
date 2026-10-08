@@ -85,6 +85,16 @@ ssh -L 3389:DC_IP:389 -L 3636:DC_IP:636 user@jumpbox      # (plus 445/88 for blo
 k1rby scan example.local -u operator -p 'pass' --dc 127.0.0.1 --port 3389
 ```
 
+The port-forward above carries k1rby's own `ldap3` core. The bundled `bloodhound-python`
+collector speaks to the DC on standard ports (389/3268) and does its own DNS, so for the **full**
+run through a pivot use a SOCKS dynamic forward and route k1rby through it — `--dns-tcp` makes
+bloodhound-python's DNS traverse SOCKS (UDP cannot):
+
+```bash
+ssh -D 1080 user@jumpbox                                  # SOCKS pivot
+proxychains k1rby scan example.local -u operator -p 'pass' --dc DC_IP --dns-tcp
+```
+
 ## Collectors it orchestrates
 
 | Source | Gives you |

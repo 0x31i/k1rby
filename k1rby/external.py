@@ -31,15 +31,21 @@ def _run(cmd: list[str], cwd: str, timeout: int = 900) -> tuple[int, str]:
         return 1, str(e)
 
 
-def bloodhound(outdir: str, dc: str, domain: str, user: str, password: str) -> str:
-    """DCOnly collection -> BloodHound JSON in outdir/bloodhound/ (load into the CE GUI)."""
+def bloodhound(outdir: str, dc: str, domain: str, user: str, password: str,
+               dns_tcp: bool = False) -> str:
+    """DCOnly collection -> BloodHound JSON in outdir/bloodhound/ (load into the CE GUI).
+
+    dns_tcp=True forces DNS over TCP, required when k1rby is run through a SOCKS pivot
+    (e.g. `proxychains k1rby ...`) because UDP DNS cannot traverse SOCKS."""
     if not _have("bloodhound-python"):
         return "skipped (bloodhound-python not installed)"
     bdir = os.path.join(outdir, "bloodhound")
     os.makedirs(bdir, exist_ok=True)
-    rc, out = _run([
-        "bloodhound-python", "-d", domain, "-u", user, "-p", password,
-        "-ns", dc, "-c", "DCOnly", "--zip", "-op", "k1rby"], cwd=bdir)
+    cmd = ["bloodhound-python", "-d", domain, "-u", user, "-p", password,
+           "-ns", dc, "-c", "DCOnly", "--zip", "-op", "k1rby"]
+    if dns_tcp:
+        cmd.append("--dns-tcp")
+    rc, out = _run(cmd, cwd=bdir)
     jsons = [f for f in os.listdir(bdir) if f.endswith((".json", ".zip"))]
     if jsons:
         return f"ok -> {bdir} ({len(jsons)} file(s))"
@@ -86,10 +92,12 @@ def certipy_find(outdir: str, dc: str, domain: str, user: str, password: str) ->
 
 
 def run_all(outdir: str, dc: str, domain: str, user: str, password: str,
-            with_bloodhound: bool = True, roast: bool = False) -> dict[str, str]:
+            with_bloodhound: bool = True, roast: bool = False,
+            dns_tcp: bool = False) -> dict[str, str]:
     results: dict[str, str] = {}
     if with_bloodhound:
-        results["bloodhound-python (DCOnly)"] = bloodhound(outdir, dc, domain, user, password)
+        results["bloodhound-python (DCOnly)"] = bloodhound(
+            outdir, dc, domain, user, password, dns_tcp=dns_tcp)
     results["netexec ldap"] = nxc_ldap(outdir, dc, domain, user, password, roast=roast)
     results["certipy find"] = certipy_find(outdir, dc, domain, user, password)
     return results
