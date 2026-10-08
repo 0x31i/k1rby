@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+# engagement output — never commit client data
+*.xlsx
+*.zip
+bloodhound/
+*.nessus
+nxc-ldap.txt
+certipy-adcs.txt
+asrep.txt
+kerb.txt
+*.bak

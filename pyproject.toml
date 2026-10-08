@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "k1rby"
+version = "0.1.0"
+description = "Read-only Active Directory recon -> one xlsx (+ BloodHound DCOnly collection)."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = ["ldap3>=2.9", "openpyxl>=3.1"]
+
+[project.optional-dependencies]
+# external collectors are invoked as CLIs if present on PATH; listed here for a one-shot install
+full = ["bloodhound-ce", "netexec", "certipy-ad"]
+
+[project.scripts]
+k1rby = "k1rby.cli:main"
+
+[tool.setuptools]
+packages = ["k1rby"]
