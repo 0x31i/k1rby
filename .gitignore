@@ -5,8 +5,13 @@ venv/
 *.egg-info/
 # engagement output — never commit client data
 *.xlsx
+*.html
+*.csv
+*.json
 *.zip
+*.b64
 bloodhound/
+out/
 *.nessus
 nxc-ldap.txt
 certipy-adcs.txt
