@@ -13,7 +13,9 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
-from ldap3 import ALL, NTLM, SUBTREE, Connection, Server
+import ssl as _ssl
+
+from ldap3 import ALL, NTLM, SIMPLE, SUBTREE, Connection, Server, Tls
 
 # ---- userAccountControl bit flags (the ones that matter for recon) ----------------------------
 _UAC = {
@@ -75,9 +77,22 @@ def _s(v: Any) -> str:
 
 
 def _maxpwdage_days(v: Any) -> str:
+    if isinstance(v, datetime.timedelta):
+        d = abs(v.total_seconds()) / 86400
+        return "never" if d == 0 else str(round(d, 1))
     try:
         t = abs(int(v))
         return "never" if t == 0 else str(round(t / 1e7 / 86400, 1))
+    except (TypeError, ValueError):
+        return ""
+
+
+def _dur_min(v: Any) -> Any:
+    """Lockout/duration as minutes. ldap3 may hand back a timedelta or a raw 100-ns int."""
+    if isinstance(v, datetime.timedelta):
+        return int(abs(v.total_seconds()) // 60)
+    try:
+        return abs(int(v)) // 10_000_000 // 60
     except (TypeError, ValueError):
         return ""
 
@@ -86,16 +101,27 @@ class Collector:
     """Opens ONE read-only bind and runs a battery of searches."""
 
     def __init__(self, dc: str, domain: str, username: str, password: str,
-                 use_ssl: bool = False, port: int | None = None):
+                 use_ssl: bool = False, port: int | None = None,
+                 auth: str = "ntlm", tls_verify: bool = True):
         self.dc = dc
         self.domain = domain
         self.base = "DC=" + ",DC=".join(domain.split("."))
-        server = Server(dc, port=port, use_ssl=use_ssl, get_info=ALL)
-        # read_only=True: ldap3 refuses add/modify/delete on this connection. NTLM bind as
-        # DOMAIN\user. auto_bind raises on a bad bind rather than silently continuing.
-        self.conn = Connection(
-            server, user=f"{domain}\\{username}", password=password,
-            authentication=NTLM, read_only=True, auto_bind=True)
+        # LDAPS with a port-forward presents the DC's cert for 127.0.0.1 -> allow skipping
+        # validation. tls_verify stays True for a direct LDAPS connection.
+        tls = Tls(validate=_ssl.CERT_NONE) if (use_ssl and not tls_verify) else None
+        server = Server(dc, port=port, use_ssl=use_ssl, tls=tls, get_info=ALL)
+        # read_only=True: ldap3 refuses add/modify/delete on this connection either way.
+        # auth="simple": user@domain over (ideally) LDAPS — no NTLM/MD4, works on modern OpenSSL.
+        # auth="ntlm": DOMAIN\user NTLM (needs MD4, unavailable on OpenSSL 3 default provider).
+        if auth.lower() == "simple":
+            user = username if ("@" in username or "," in username) else f"{username}@{domain}"
+            self.conn = Connection(server, user=user, password=password,
+                                   authentication=SIMPLE, read_only=True, auto_bind=True)
+        else:
+            from . import md4compat
+            md4compat.install()   # make NTLM's MD4 work on OpenSSL-3 Python (no-op if native MD4 ok)
+            self.conn = Connection(server, user=f"{domain}\\{username}", password=password,
+                                   authentication=NTLM, read_only=True, auto_bind=True)
         self.server = server
         self._users_cache: list[dict] | None = None
         self._computers_cache: list[dict] | None = None
@@ -138,8 +164,7 @@ class Collector:
             "minPwdLength": _s(g("minPwdLength")),
             "maxPwdAgeDays": _maxpwdage_days(g("maxPwdAge")),
             "lockoutThreshold": _s(g("lockoutThreshold")),
-            "lockoutDurationMin": (lambda x: abs(int(x)) // 10_000_000 // 60 if x else 0)(
-                g("lockoutDuration")) if g("lockoutDuration") else "",
+            "lockoutDurationMin": _dur_min(g("lockoutDuration")),
             "pwdHistoryLength": _s(g("pwdHistoryLength")),
             "machineAccountQuota": _s(g("ms-DS-MachineAccountQuota")),
             "forestFunctionalLevel": _s(getattr(rootdse, "other", {}).get(
@@ -222,8 +247,10 @@ class Collector:
     def computers(self) -> list[dict]:
         if self._computers_cache is not None:
             return self._computers_cache
+        # Only standard, always-present attributes here. LAPS (schema-dependent) is handled
+        # separately in laps() with graceful fallback, so a missing LAPS schema can't break this.
         attrs = ["name", "dNSHostName", "operatingSystem", "operatingSystemVersion",
-                 "lastLogonTimestamp", "userAccountControl", "ms-Mcs-AdmPwd",
+                 "lastLogonTimestamp", "userAccountControl",
                  "msDS-AllowedToActOnBehalfOfOtherIdentity", "msDS-AllowedToDelegateTo"]
         raw = self._search("(objectClass=computer)", attrs)
         out = []
@@ -239,7 +266,6 @@ class Collector:
                 "unconstrainedDeleg": _has(uac, "TRUSTED_FOR_DELEGATION"),
                 "constrainedDeleg": _s(r.get("msDS-AllowedToDelegateTo")),
                 "rbcd": bool(r.get("msDS-AllowedToActOnBehalfOfOtherIdentity")),
-                "lapsReadable": bool(r.get("ms-Mcs-AdmPwd")),
                 "_dn": r.get("_dn"),
             })
         self._computers_cache = out

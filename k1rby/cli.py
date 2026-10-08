@@ -37,6 +37,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("-o", "--out", default=None, help="output .xlsx (default: <domain>-k1rby.xlsx)")
     s.add_argument("--ssl", action="store_true", help="LDAPS (636) instead of LDAP (389)")
     s.add_argument("--port", type=int, default=None)
+    s.add_argument("--simple", action="store_true",
+                   help="SIMPLE bind (user@domain) instead of NTLM — pair with --ssl. Needed on "
+                        "modern Python/OpenSSL 3 where NTLM's MD4 is unavailable.")
+    s.add_argument("--insecure-tls", action="store_true",
+                   help="skip TLS cert validation (e.g. LDAPS reached through a port-forward)")
     s.add_argument("--no-bloodhound", action="store_true", help="skip bloodhound-python collection")
     s.add_argument("--no-external", action="store_true", help="skip ALL external tools (ldap3 only)")
     s.add_argument("--roast", action="store_true",
@@ -57,7 +62,9 @@ def main(argv: list[str] | None = None) -> int:
     t0 = time.time()
     try:
         c = ldapcollect.Collector(args.dc, args.domain, args.username, args.password,
-                                  use_ssl=args.ssl, port=args.port)
+                                  use_ssl=args.ssl, port=args.port,
+                                  auth="simple" if args.simple else "ntlm",
+                                  tls_verify=not args.insecure_tls)
     except Exception as e:  # noqa: BLE001
         sys.stderr.write(f"[!] bind failed: {e}\n")
         return 2
