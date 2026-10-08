@@ -78,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         ("Domain", c.domain_info),
         ("Forest", c.forest_info),
         ("Password Policies (FGPP)", c.password_policies_fgpp),
+        ("Password Policy (Compliance)", c.password_policy_compliance),
         ("Domain Controllers", c.domain_controllers),
         ("Trusts", c.trusts),
         ("Sites", c.sites),
