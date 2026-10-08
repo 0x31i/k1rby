@@ -2,13 +2,29 @@
 
 **Read-only Active Directory recon in one shot — one `.xlsx`, plus a BloodHound collection for the graph.**
 
-k1rby is the "run everything safe, once" button for AD enumeration. It opens a single read-only
-LDAP bind, pulls the directory the way ADRecon/PingCastle do (users, computers, groups, GPOs,
-trusts, password policy, Kerberos, delegation), optionally runs the best open-source collectors
-alongside it, and writes a single tidy workbook with the risky rows highlighted.
+k1rby is the "run everything safe, once" button for AD enumeration — and then it does what
+ADRecon won't: **it analyzes what it found.**
+
+It opens a single read-only LDAP bind, pulls the full directory (users, computers, groups, GPOs,
+trusts, sites/subnets, password policy, Kerberos, delegation, DNS, LAPS, …), optionally runs the
+best OSS collectors alongside it (BloodHound DCOnly, netexec, certipy), and produces **three**
+things: a tidy **xlsx** (ADRecon-parity inventory), a **findings report** (severity-rated issues
+with affected objects, remediation, MITRE mapping, and an overall **posture score**), and a
+**modern HTML dashboard**. The raw-data dump is the floor, not the deliverable.
 
 It is built to be **boring to your defenders' tooling**: everything is an LDAP *search*, it runs
 from a Linux box (so Windows AV never scans or quarantines it), and it carries a neutral name.
+
+### Beyond ADRecon
+
+| | ADRecon | k1rby |
+|---|---|---|
+| Inventory sheets | ✅ | ✅ (parity) |
+| **Findings + severity** | ❌ (raw data only) | ✅ 19 rules, MITRE-mapped |
+| **Posture score** | ❌ | ✅ 0–100 |
+| **Modern HTML dashboard** | ❌ (xlsx only) | ✅ score, donut, ranked findings |
+| **BloodHound graph** | ❌ | ✅ bundled DCOnly collection |
+| Runs off Windows (AV-safe) | ❌ (PowerShell) | ✅ Linux/python |
 
 ## Safe by construction
 
@@ -43,7 +59,10 @@ accounts (SPN / `DONT_REQ_PREAUTH`) over LDAP without requesting anything.
 
 ## What you get
 
-- **`<domain>-k1rby.xlsx`** — Summary tab + one sheet each (ADRecon-parity): Domain, Forest,
+- **`<domain>-k1rby.html`** — modern report: posture score, severity donut, findings ranked by
+  severity (each with affected objects, remediation, MITRE technique), and the full inventory in
+  collapsible tables. Dark, self-contained, print-to-PDF ready.
+- **`<domain>-k1rby.xlsx`** — **Summary** (posture score) + **Findings** sheet + one sheet each (ADRecon-parity): Domain, Forest,
   Password Policies (FGPP), Domain Controllers, Trusts, **Sites**, **Subnets**, Users (UAC flags
   decoded), Kerberoastable, AS-REP Roastable, Privileged Users, Delegation (unconstrained/
   constrained/RBCD), Computers (OS, delegation), **LAPS** (readable local-admin passwords),

@@ -106,10 +106,24 @@ def main(argv: list[str] | None = None) -> int:
         for tool, status in external.items():
             sys.stderr.write(f"[+] {tool}: {status}\n")
 
-    counts = report.build(out, args.domain, sections, external)
+    # ---- analysis (the "more than ADRecon" layer) ----
+    from . import findings as fnd, htmlreport
+    flist = fnd.analyze(sections)
+    score = fnd.posture_score(flist)
+    sc = fnd.severity_counts(flist)
+
+    counts = report.build(out, args.domain, sections, external, findings=flist, score=score)
+    html_out = os.path.splitext(out)[0] + ".html"
+    with open(html_out, "w", encoding="utf-8") as fh:
+        fh.write(htmlreport.build(args.domain, flist, sections, external))
+
     total = sum(counts.values())
-    sys.stderr.write(f"\n[✓] {total} objects across {len(counts)} sheets -> {out}  "
-                     f"({time.time() - t0:.0f}s)\n")
+    sys.stderr.write(
+        f"\n[✓] {total} objects, {len(flist)} findings | posture {score}/100 "
+        f"(C:{sc['critical']} H:{sc['high']} M:{sc['medium']} L:{sc['low']}) ({time.time() - t0:.0f}s)\n"
+        f"    xlsx -> {out}\n    html -> {html_out}\n")
+    if external and any("bloodhound" in k.lower() for k in external):
+        sys.stderr.write("    bloodhound/ -> load into BloodHound CE for attack paths\n")
     return 0
 
 

@@ -53,8 +53,29 @@ def _fmt(v: Any) -> Any:
     return "" if v is None else v
 
 
+def _findings_sheet(wb: Workbook, findings: list) -> None:
+    ws = wb.create_sheet("Findings", 0)  # Summary (inserted at 0 later) ends up before it
+    cols = ["Severity", "ID", "Title", "Category", "MITRE", "Affected", "Remediation"]
+    sev_fill = {"critical": "F2C2C4", "high": "FBD5BF", "medium": "FBE9C5",
+                "low": "E3E3E3", "info": "D6E4FB"}
+    for i, c in enumerate(cols, 1):
+        cell = ws.cell(1, i, c)
+        cell.font = _HEAD
+        cell.fill = _HEAD_FILL
+    for ri, f in enumerate(findings, 2):
+        vals = [f.severity.upper(), f.id, f.title, f.category, f.mitre, f.count, f.remediation]
+        for ci, v in enumerate(vals, 1):
+            cell = ws.cell(ri, ci, v)
+            cell.fill = PatternFill("solid", fgColor=sev_fill.get(f.severity, "FFFFFF"))
+            cell.alignment = Alignment(wrap_text=(ci == 7), vertical="top")
+    ws.freeze_panes = "A2"
+    for i, w in enumerate([11, 9, 44, 15, 20, 10, 70], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+
 def build(path: str, domain: str, sections: dict[str, list[dict]],
-          external: dict[str, str] | None = None) -> dict[str, int]:
+          external: dict[str, str] | None = None,
+          findings: list | None = None, score: int | None = None) -> dict[str, int]:
     """sections: {sheet_name: rows}. Returns per-sheet counts (also used for the Summary)."""
     wb = Workbook()
     wb.remove(wb.active)
@@ -75,10 +96,18 @@ def build(path: str, domain: str, sections: dict[str, list[dict]],
     for name, rows in sections.items():
         counts[name] = _sheet(wb, name, rows, risk.get(name))
 
+    # ---- Findings tab (after Summary) ----
+    if findings:
+        _findings_sheet(wb, findings)
+
     # ---- Summary tab (first) ----
     summ = wb.create_sheet("Summary", 0)
     summ["A1"] = f"k1rby — AD recon: {domain}"
     summ["A1"].font = _TITLE
+    if score is not None:
+        summ["A2"] = f"Posture score: {score}/100   ·   {len(findings or [])} findings"
+        summ["A2"].font = Font(bold=True, size=12,
+                               color=("C00000" if score < 60 else "B36B00" if score < 80 else "2E7D32"))
     summ["A3"] = "Section"
     summ["B3"] = "Count"
     summ["A3"].font = summ["B3"].font = _HEAD
