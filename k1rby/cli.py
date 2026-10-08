@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("[*] external collectors (best-effort, read-only)...\n")
         external = ext.run_all(outdir, args.dc, args.domain, args.username, args.password,
                                with_bloodhound=not args.no_bloodhound, roast=args.roast,
-                               dns_tcp=args.dns_tcp)
+                               dns_tcp=args.dns_tcp, use_ssl=args.ssl)
         for tool, status in external.items():
             sys.stderr.write(f"[+] {tool}: {status}\n")
 

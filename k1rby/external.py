@@ -77,13 +77,22 @@ def nxc_ldap(outdir: str, dc: str, domain: str, user: str, password: str,
     return f"ok -> {logf}" + ("" if roast else " (pass-pol only; --roast for ticket requests)")
 
 
-def certipy_find(outdir: str, dc: str, domain: str, user: str, password: str) -> str:
-    """AD CS / ESC enumeration (find only — no requests/abuse)."""
+def certipy_find(outdir: str, dc: str, domain: str, user: str, password: str,
+                 use_ssl: bool = False, dns_tcp: bool = False) -> str:
+    """AD CS / ESC enumeration (find only — no requests/abuse).
+
+    use_ssl=False forces `-ldap-scheme ldap` (plain 389, NTLM-signed): certipy v5 defaults to
+    LDAPS, which breaks on DCs that have no LDAPS certificate. dns_tcp=True adds `-ns dc -dns-tcp`
+    so name resolution traverses a SOCKS pivot."""
     if not _have("certipy") and not _have("certipy-ad"):
         return "skipped (certipy not installed)"
     binary = "certipy" if _have("certipy") else "certipy-ad"
-    rc, out = _run([binary, "find", "-u", f"{user}@{domain}", "-p", password,
-                    "-dc-ip", dc, "-stdout"], cwd=outdir, timeout=300)
+    cmd = [binary, "find", "-u", f"{user}@{domain}", "-p", password, "-dc-ip", dc]
+    cmd += ["-ldap-scheme", "ldaps" if use_ssl else "ldap"]
+    if dns_tcp:
+        cmd += ["-ns", dc, "-dns-tcp"]
+    cmd.append("-stdout")
+    rc, out = _run(cmd, cwd=outdir, timeout=300)
     logf = os.path.join(outdir, "certipy-adcs.txt")
     with open(logf, "w", encoding="utf-8") as fh:
         fh.write(out)
@@ -93,11 +102,12 @@ def certipy_find(outdir: str, dc: str, domain: str, user: str, password: str) ->
 
 def run_all(outdir: str, dc: str, domain: str, user: str, password: str,
             with_bloodhound: bool = True, roast: bool = False,
-            dns_tcp: bool = False) -> dict[str, str]:
+            dns_tcp: bool = False, use_ssl: bool = False) -> dict[str, str]:
     results: dict[str, str] = {}
     if with_bloodhound:
         results["bloodhound-python (DCOnly)"] = bloodhound(
             outdir, dc, domain, user, password, dns_tcp=dns_tcp)
     results["netexec ldap"] = nxc_ldap(outdir, dc, domain, user, password, roast=roast)
-    results["certipy find"] = certipy_find(outdir, dc, domain, user, password)
+    results["certipy find"] = certipy_find(
+        outdir, dc, domain, user, password, use_ssl=use_ssl, dns_tcp=dns_tcp)
     return results
