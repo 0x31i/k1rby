@@ -452,13 +452,23 @@ class Collector:
         flt = "(objectClass=msDS-PasswordSettings)"
         rows = self._search(flt, ["name", "msDS-PasswordSettingsPrecedence",
                                    "msDS-MinimumPasswordLength", "msDS-LockoutThreshold",
-                                   "msDS-PasswordHistoryLength", "msDS-PSOAppliesTo"],
+                                   "msDS-PasswordHistoryLength", "msDS-PSOAppliesTo",
+                                   "msDS-MaximumPasswordAge", "msDS-MinimumPasswordAge",
+                                   "msDS-PasswordComplexityEnabled",
+                                   "msDS-PasswordReversibleEncryptionEnabled",
+                                   "msDS-LockoutObservationWindow", "msDS-LockoutDuration"],
                             base=f"CN=Password Settings Container,CN=System,{self.base}")
         return [{
             "name": _s(r.get("name")),
             "precedence": _s(r.get("msDS-PasswordSettingsPrecedence")),
             "minPwdLength": _s(r.get("msDS-MinimumPasswordLength")),
+            "maxPwdAgeDays": _maxpwdage_days(r.get("msDS-MaximumPasswordAge")),
+            "minPwdAgeDays": _maxpwdage_days(r.get("msDS-MinimumPasswordAge")),
+            "complexity": _s(r.get("msDS-PasswordComplexityEnabled")),
+            "reversibleEncryption": _s(r.get("msDS-PasswordReversibleEncryptionEnabled")),
             "lockoutThreshold": _s(r.get("msDS-LockoutThreshold")),
+            "lockoutObservationMin": _dur_min(r.get("msDS-LockoutObservationWindow")),
+            "lockoutDurationMin": _dur_min(r.get("msDS-LockoutDuration")),
             "pwdHistory": _s(r.get("msDS-PasswordHistoryLength")),
             "appliesTo": _s(r.get("msDS-PSOAppliesTo")),
         } for r in rows]
@@ -777,6 +787,23 @@ class Collector:
                  "driver": _s(r.get("driverName")), "port": _s(r.get("portName")),
                  "location": _s(r.get("location")), "uncName": _s(r.get("uNCName")),
                  "created": _s(r.get("whenCreated")), "dn": r.get("_dn")} for r in rows]
+
+    def bitlocker(self) -> list[dict]:
+        """BitLocker recovery keys (msFVE-RecoveryInformation child objects). DA-gated: a standard
+        domain user cannot read msFVE-RecoveryPassword, so this is empty on a user run and
+        populates on a privileged (DA/delegated) run. ADRecon parity."""
+        rows = self._search("(objectClass=msFVE-RecoveryInformation)",
+                            ["name", "msFVE-RecoveryGuid", "msFVE-VolumeGuid",
+                             "msFVE-RecoveryPassword", "whenCreated"])
+        out = []
+        for r in rows:
+            dn = r.get("_dn") or ""
+            parent = dn.split(",", 1)[1] if "," in dn else ""
+            out.append({"computer": _cn(parent), "recoveryGuid": _s(r.get("msFVE-RecoveryGuid")),
+                        "volumeGuid": _s(r.get("msFVE-VolumeGuid")),
+                        "recoveryPassword": _s(r.get("msFVE-RecoveryPassword")),
+                        "created": _s(r.get("whenCreated")), "dn": dn})
+        return out
 
     # ---- derived (computed from users/computers, no extra queries) ----------------------------
     def kerberoastable(self) -> list[dict]:

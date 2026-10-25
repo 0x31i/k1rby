@@ -41,6 +41,7 @@ Dump schema (JSON, produced by windows/collect.ps1)
   "subnets": [...], "laps": [...],                 # laps entries carry all 4 LAPS attrs
   "printers": [...],              # printQueue objects (printerName/serverName/driverName/...)
   "schema_history": [...],        # classSchema/attributeSchema w/ name,lDAPDisplayName,whenCreated
+  "bitlocker": [...],             # msFVE-RecoveryInformation (DA-gated; empty on a user run)
   "gpo_containers": [...],        # OUs + domainDNS carrying gPLink/gPOptions/name
   "gpo_site_containers": [...],   # site objects carrying gPLink/gPOptions/name
 
@@ -177,6 +178,8 @@ class _FakeConn:
             return "printers"
         if flt == "(|(objectClass=classSchema)(objectClass=attributeSchema))":
             return "schema_history"
+        if flt == "(objectClass=msFVE-RecoveryInformation)":
+            return "bitlocker"
         return None
 
     # -- BASE / explicit path: Collector.*() -> conn.search(); then reads conn.entries ---------

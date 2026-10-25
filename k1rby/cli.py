@@ -46,6 +46,7 @@ def _steps(c):
         ("Computers", c.computers),
         ("Computer SPNs", c.computer_spns),
         ("LAPS", c.laps),
+        ("BitLocker", c.bitlocker),
         ("Groups", c.groups),
         ("Group Members", c.group_members_all),
         ("Privileged Members", c.privileged_group_members),

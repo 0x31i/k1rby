@@ -179,7 +179,8 @@ $dump.dc_servers = $dcsrv
 # ---- SUBTREE buckets (same filters/attrs k1rby's live collector uses) -------------------------
 $dump.fgpp = Collect 'FGPP' "CN=Password Settings Container,CN=System,$Base" `
   '(objectClass=msDS-PasswordSettings)' `
-  @('name','msDS-PasswordSettingsPrecedence','msDS-MinimumPasswordLength','msDS-LockoutThreshold','msDS-PasswordHistoryLength','msDS-PSOAppliesTo')
+  @('name','msDS-PasswordSettingsPrecedence','msDS-MinimumPasswordLength','msDS-LockoutThreshold','msDS-PasswordHistoryLength','msDS-PSOAppliesTo',
+    'msDS-MaximumPasswordAge','msDS-MinimumPasswordAge','msDS-PasswordComplexityEnabled','msDS-PasswordReversibleEncryptionEnabled','msDS-LockoutObservationWindow','msDS-LockoutDuration')
 
 $dump.domain_controllers = Collect 'DomainControllers' $Base `
   '(&(objectCategory=computer)(userAccountControl:1.2.840.113556.1.4.803:=8192))' `
@@ -238,6 +239,11 @@ $dump.printers = Collect 'Printers' $Base '(objectClass=printQueue)' `
 $dump.schema_history = Collect 'SchemaHistory' "CN=Schema,CN=Configuration,$Base" `
   '(|(objectClass=classSchema)(objectClass=attributeSchema))' `
   @('name','lDAPDisplayName','objectClass','whenCreated','whenChanged')
+
+# ---- BitLocker recovery keys (msFVE-RecoveryInformation) — DA-gated; empty on a user run -------
+# Recovery passwords are confidential: readable by Domain Admins / the computer object / delegates.
+$dump.bitlocker = Collect 'BitLocker' $Base '(objectClass=msFVE-RecoveryInformation)' `
+  @('name','msFVE-RecoveryGuid','msFVE-VolumeGuid','msFVE-RecoveryPassword','whenCreated')
 
 # ---- privileged group direct members ----------------------------------------------------------
 $privGroups = @('Domain Admins','Enterprise Admins','Schema Admins','Administrators',
