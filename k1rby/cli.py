@@ -62,6 +62,7 @@ def _steps(c):
         ("GPOs", c.gpos),
         ("GPO Links", c.gpo_links),
         ("DNS Records", c.dns_records),
+        ("DNS Zones", c.dns_zones),
         ("ACLs (raw)", c.acls),
     ]
 

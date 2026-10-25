@@ -270,6 +270,16 @@ def _effective_priv_dns(s):
     return dns
 
 
+def _r_dc_weak_enc(s):
+    dcnames = {str(d.get("name", "")).lower() for d in s.get("Domain Controllers", [])}
+    out = []
+    for c in s.get("Computers", []):
+        if str(c.get("name", "")).lower() in dcnames and (c.get("kerberosRC4") or c.get("kerberosDESOnly")):
+            out.append({"dc": c.get("name"), "rc4": bool(c.get("kerberosRC4")),
+                        "desOnly": bool(c.get("kerberosDESOnly"))})
+    return out
+
+
 def _r_orphan_admincount(s):
     eff = _effective_priv_dns(s)
     out = []
@@ -433,6 +443,12 @@ _RULES = [
      "adminCount=1 on an account that is no longer (directly or via nesting) in a protected group "
      "leaves AdminSDHolder-tightened ACLs and signals past/stale privilege worth reviewing.",
      _r_orphan_admincount),
+    ("AD-031", "Domain controller allows RC4/DES Kerberos encryption", "high", "Kerberos",
+     "T1558",
+     "Set msDS-SupportedEncryptionTypes on DCs to AES-only (clear RC4/DES) once all clients support AES.",
+     "A DC that still accepts RC4/DES issues weak tickets that accelerate Kerberoasting/offline "
+     "cracking against the domain.",
+     _r_dc_weak_enc),
 ]
 
 

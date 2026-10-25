@@ -685,7 +685,8 @@ class Collector:
                  "primaryGroupID", "description", "mS-DS-CreatorSID",
                  "msDS-AllowedToActOnBehalfOfOtherIdentity", "msDS-AllowedToDelegateTo",
                  "servicePrincipalName", "msDS-KeyCredentialLink", "ms-Mcs-AdmPwdExpirationTime",
-                 "msLAPS-PasswordExpirationTime", "msLAPS-EncryptedPassword"]
+                 "msLAPS-PasswordExpirationTime", "msLAPS-EncryptedPassword",
+                 "msDS-SupportedEncryptionTypes"]
         raw = self._search("(objectClass=computer)", attrs)
         amap = self._dns_a_map()
         out = []
@@ -732,6 +733,10 @@ class Collector:
                 "lapsLegacyExpiry": _s(r.get("ms-Mcs-AdmPwdExpirationTime")),
                 "lapsExpiry": _s(r.get("msLAPS-PasswordExpirationTime")),
                 "hasLaps": bool(r.get("ms-Mcs-AdmPwdExpirationTime") or r.get("msLAPS-PasswordExpirationTime") or r.get("msLAPS-EncryptedPassword")),
+                "kerberosDESOnly": _enc_types(r.get("msDS-SupportedEncryptionTypes"))[0],
+                "kerberosRC4": _enc_types(r.get("msDS-SupportedEncryptionTypes"))[1],
+                "kerberosAES128": _enc_types(r.get("msDS-SupportedEncryptionTypes"))[2],
+                "kerberosAES256": _enc_types(r.get("msDS-SupportedEncryptionTypes"))[3],
                 "_dn": dn,
             })
         self._computers_cache = out
@@ -772,7 +777,7 @@ class Collector:
         """Direct members of the highest-value built-in groups."""
         priv = ["Domain Admins", "Enterprise Admins", "Schema Admins", "Administrators",
                 "Account Operators", "Backup Operators", "Server Operators",
-                "Print Operators", "DnsAdmins"]
+                "Print Operators", "DnsAdmins", "Protected Users"]
         out = []
         for g in priv:
             self.conn.search(self.base, f"(&(objectClass=group)(cn={g}))",
@@ -1164,6 +1169,27 @@ class Collector:
                 owner = zone if name == "@" else (f"{name}.{zone}" if name else zone)
                 out.append({"zone": zone, "record": owner, "type": rtype, "data": data})
         return out[:20000]
+
+    def dns_zones(self) -> list[dict]:
+        """AD-integrated DNS zone objects (zone name + create/change dates). ADRecon parity.
+        Offline: read from the dump; live scan: query the three DNS partitions."""
+        dump = getattr(self, "_dump", None)
+        if dump is not None:
+            return [{"zone": _s(z.get("name")), "created": _s(z.get("whenCreated")),
+                     "changed": _s(z.get("whenChanged")), "dn": z.get("_dn")}
+                    for z in dump.get("dns_zones", [])]
+        out = []
+        for part in ("DomainDnsZones", "ForestDnsZones"):
+            base = f"CN=MicrosoftDNS,DC={part},{self.base}"
+            try:
+                rows = self._search("(objectClass=dnsZone)",
+                                    ["name", "whenCreated", "whenChanged"], base=base)
+            except Exception:  # noqa: BLE001
+                rows = []
+            for r in rows:
+                out.append({"zone": _s(r.get("name")), "created": _s(r.get("whenCreated")),
+                            "changed": _s(r.get("whenChanged")), "dn": r.get("_dn")})
+        return out
 
     def _dns_a_map(self) -> dict[str, str]:
         """{fqdn_lower: ipv4} from A records — used to give Computers/DCs an IPv4Address."""

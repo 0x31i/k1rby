@@ -211,7 +211,8 @@ $dump.computers = Collect 'Computers' $Base '(objectClass=computer)' `
     'lastLogonTimestamp','userAccountControl','pwdLastSet','whenCreated','whenChanged','objectSid',
     'sIDHistory','primaryGroupID','description','mS-DS-CreatorSID','servicePrincipalName',
     'msDS-AllowedToActOnBehalfOfOtherIdentity','msDS-AllowedToDelegateTo',
-    'msDS-KeyCredentialLink','ms-Mcs-AdmPwdExpirationTime','msLAPS-PasswordExpirationTime','msLAPS-EncryptedPassword') `
+    'msDS-KeyCredentialLink','ms-Mcs-AdmPwdExpirationTime','msLAPS-PasswordExpirationTime','msLAPS-EncryptedPassword',
+    'msDS-SupportedEncryptionTypes') `
   @('objectSid','sIDHistory','mS-DS-CreatorSID') `
   @('msDS-AllowedToActOnBehalfOfOtherIdentity','msDS-KeyCredentialLink','msLAPS-EncryptedPassword')
 
@@ -273,7 +274,8 @@ $dump.ds_heuristics = Collect 'dSHeuristics' "CN=Directory Service,CN=Windows NT
 
 # ---- privileged group direct members ----------------------------------------------------------
 $privGroups = @('Domain Admins','Enterprise Admins','Schema Admins','Administrators',
-                'Account Operators','Backup Operators','Server Operators','Print Operators','DnsAdmins')
+                'Account Operators','Backup Operators','Server Operators','Print Operators','DnsAdmins',
+                'Protected Users')
 $priv = [ordered]@{}
 foreach ($g in $privGroups) {
   try {
@@ -322,6 +324,23 @@ foreach ($zb in @("CN=MicrosoftDNS,DC=DomainDnsZones,$Base",
 }
 $dump.dns_nodes = $dnsNodes
 W "DNS nodes: $($dnsNodes.Count)"
+
+# ---- DNS zones (zone objects: name + type/aging via dNSProperty, parsed off-host) -------------
+$dnsZones = New-Object System.Collections.ArrayList
+foreach ($zb in @("CN=MicrosoftDNS,DC=DomainDnsZones,$Base",
+                  "CN=MicrosoftDNS,DC=ForestDnsZones,$Base",
+                  "CN=MicrosoftDNS,CN=System,$Base")) {
+  try {
+    foreach ($e in (Search-Paged $zb '(objectClass=dnsZone)' @('name','whenCreated','whenChanged'))) {
+      $nm = if ($e.Attributes.Contains('name')) { [string]$e.Attributes['name'][0] } else { '' }
+      $wc = if ($e.Attributes.Contains('whenCreated')) { [string]$e.Attributes['whenCreated'][0] } else { '' }
+      $wh = if ($e.Attributes.Contains('whenChanged')) { [string]$e.Attributes['whenChanged'][0] } else { '' }
+      [void]$dnsZones.Add([ordered]@{ _dn = [string]$e.DistinguishedName; name = $nm; whenCreated = $wc; whenChanged = $wh })
+    }
+  } catch { }
+}
+$dump.dns_zones = $dnsZones
+W "DNS zones: $($dnsZones.Count)"
 
 # ---- security descriptors: nTSecurityDescriptor (Owner+Group+DACL, base64) --------------------
 # Captured raw for off-host decoding. SD-flags control = 7 omits the SACL (which needs privilege).

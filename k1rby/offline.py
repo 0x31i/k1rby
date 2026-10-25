@@ -42,6 +42,7 @@ Dump schema (JSON, produced by windows/collect.ps1)
   "printers": [...],              # printQueue objects (printerName/serverName/driverName/...)
   "schema_history": [...],        # classSchema/attributeSchema w/ name,lDAPDisplayName,whenCreated
   "bitlocker": [...],             # msFVE-RecoveryInformation (DA-gated; empty on a user run)
+  "dns_zones": [...],             # dnsZone objects (name/whenCreated/whenChanged) — read directly
   "gmsa": [...],                  # msDS-GroupManagedServiceAccount accounts
   "cert_templates": [...],        # AD CS pKICertificateTemplate objects (Config NC)
   "cert_cas": [...],              # pKIEnrollmentService (AD CS CAs)
