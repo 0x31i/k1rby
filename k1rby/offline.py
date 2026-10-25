@@ -44,6 +44,9 @@ Dump schema (JSON, produced by windows/collect.ps1)
   "bitlocker": [...],             # msFVE-RecoveryInformation (DA-gated; empty on a user run)
   "gmsa": [...],                  # msDS-GroupManagedServiceAccount accounts
   "cert_templates": [...],        # AD CS pKICertificateTemplate objects (Config NC)
+  "cert_cas": [...],              # pKIEnrollmentService (AD CS CAs)
+  "fsp": [...],                   # foreignSecurityPrincipal objects
+  "acls": [...],                  # [{_dn, sd(base64 nTSecurityDescriptor)}] — decoded off-host
   "ds_heuristics": [...],         # 1-row dSHeuristics config flags
   "gpo_containers": [...],        # OUs + domainDNS carrying gPLink/gPOptions/name
   "gpo_site_containers": [...],   # site objects carrying gPLink/gPOptions/name
@@ -187,6 +190,10 @@ class _FakeConn:
             return "gmsa"
         if flt == "(objectClass=pKICertificateTemplate)":
             return "cert_templates"
+        if flt == "(objectClass=pKIEnrollmentService)":
+            return "cert_cas"
+        if flt == "(objectClass=foreignSecurityPrincipal)":
+            return "fsp"
         if flt == "(objectClass=nTDSService)":
             return "ds_heuristics"
         return None

@@ -196,16 +196,18 @@ $dump.users = Collect 'Users' $Base '(&(objectCategory=person)(objectClass=user)
     'logonCount','whenCreated','whenChanged','memberOf','description','info','userWorkstations',
     'msDS-AllowedToDelegateTo','objectSid','sIDHistory','primaryGroupID','accountExpires','mail',
     'manager','department','title','company','mobile','homeDirectory','profilePath','scriptPath',
-    'msDS-SupportedEncryptionTypes') `
-  @('objectSid','sIDHistory')
+    'msDS-SupportedEncryptionTypes','msDS-KeyCredentialLink') `
+  @('objectSid','sIDHistory') `
+  @('msDS-KeyCredentialLink')
 
 $dump.computers = Collect 'Computers' $Base '(objectClass=computer)' `
   @('name','sAMAccountName','dNSHostName','operatingSystem','operatingSystemVersion',
     'lastLogonTimestamp','userAccountControl','pwdLastSet','whenCreated','whenChanged','objectSid',
     'sIDHistory','primaryGroupID','description','mS-DS-CreatorSID','servicePrincipalName',
-    'msDS-AllowedToActOnBehalfOfOtherIdentity','msDS-AllowedToDelegateTo') `
+    'msDS-AllowedToActOnBehalfOfOtherIdentity','msDS-AllowedToDelegateTo',
+    'msDS-KeyCredentialLink','ms-Mcs-AdmPwdExpirationTime','msLAPS-PasswordExpirationTime','msLAPS-EncryptedPassword') `
   @('objectSid','sIDHistory','mS-DS-CreatorSID') `
-  @('msDS-AllowedToActOnBehalfOfOtherIdentity')
+  @('msDS-AllowedToActOnBehalfOfOtherIdentity','msDS-KeyCredentialLink','msLAPS-EncryptedPassword')
 
 $dump.groups = Collect 'Groups' $Base '(objectClass=group)' `
   @('name','member','adminCount','description','groupType','objectSid','sIDHistory','managedBy','whenCreated','whenChanged') `
@@ -253,6 +255,11 @@ $dump.gmsa = Collect 'gMSA' $Base '(objectClass=msDS-GroupManagedServiceAccount)
 $dump.cert_templates = Collect 'CertTemplates' "CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,$Base" `
   '(objectClass=pKICertificateTemplate)' `
   @('name','displayName','msPKI-Certificate-Name-Flag','msPKI-Enrollment-Flag','pKIExtendedKeyUsage','msPKI-RA-Signature','whenCreated')
+
+# ---- AD CS enrollment services / CAs (Config NC) — Authenticated-Users readable ---------------
+$dump.cert_cas = Collect 'CertCAs' "CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=Configuration,$Base" `
+  '(objectClass=pKIEnrollmentService)' `
+  @('name','displayName','dNSHostName','cACertificateDN','certificateTemplates','flags','whenCreated')
 
 # ---- dSHeuristics (directory-service config flags; anonymous-LDAP indicator) ------------------
 $dump.ds_heuristics = Collect 'dSHeuristics' "CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,$Base" `
@@ -309,6 +316,39 @@ foreach ($zb in @("CN=MicrosoftDNS,DC=DomainDnsZones,$Base",
 }
 $dump.dns_nodes = $dnsNodes
 W "DNS nodes: $($dnsNodes.Count)"
+
+# ---- security descriptors: nTSecurityDescriptor (Owner+Group+DACL, base64) --------------------
+# Captured raw for off-host decoding. SD-flags control = 7 omits the SACL (which needs privilege).
+$acls = New-Object System.Collections.ArrayList
+try {
+  $sdMask = [System.DirectoryServices.Protocols.SecurityMasks]'Owner, Group, Dacl'
+  $sdCtl  = New-Object System.DirectoryServices.Protocols.SecurityDescriptorFlagControl($sdMask)
+  $sreq = New-Object System.DirectoryServices.Protocols.SearchRequest($Base,
+            '(|(objectClass=user)(objectClass=computer)(objectClass=group)(objectClass=organizationalUnit))',
+            $SC::Subtree, @('nTSecurityDescriptor'))
+  $sprc = New-Object System.DirectoryServices.Protocols.PageResultRequestControl(500)
+  [void]$sreq.Controls.Add($sprc)
+  [void]$sreq.Controls.Add($sdCtl)
+  while ($true) {
+    $sresp = $conn.SendRequest($sreq)
+    foreach ($e in $sresp.Entries) {
+      if ($e.Attributes.Contains('nTSecurityDescriptor')) {
+        $bytes = $e.Attributes['nTSecurityDescriptor'].GetValues([byte[]])[0]
+        [void]$acls.Add([ordered]@{ _dn = [string]$e.DistinguishedName; sd = [Convert]::ToBase64String($bytes) })
+      }
+    }
+    $ck = $null
+    foreach ($c in $sresp.Controls) { if ($c -is [System.DirectoryServices.Protocols.PageResultResponseControl]) { $ck = $c.Cookie } }
+    if (-not $ck -or $ck.Length -eq 0) { break }
+    $sprc.Cookie = $ck
+  }
+} catch { W "ACLs failed: $($_.Exception.Message)" }
+$dump.acls = $acls
+W "ACLs (SD blobs): $($acls.Count)"
+
+# ---- foreign security principals (cross-trust SIDs placed in groups) --------------------------
+$dump.fsp = Collect 'ForeignSPs' "CN=ForeignSecurityPrincipals,$Base" '(objectClass=foreignSecurityPrincipal)' `
+  @('name','objectSid') @('objectSid')
 
 $conn.Dispose()
 

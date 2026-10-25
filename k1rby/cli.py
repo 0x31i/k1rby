@@ -46,18 +46,23 @@ def _steps(c):
         ("Delegation", c.delegation),
         ("Computers", c.computers),
         ("Computer SPNs", c.computer_spns),
+        ("Key Credentials", c.key_credentials),
         ("LAPS", c.laps),
+        ("LAPS Coverage", c.laps_coverage),
         ("BitLocker", c.bitlocker),
         ("gMSA", c.gmsa),
         ("Certificate Templates", c.cert_templates),
+        ("Certificate Authorities", c.cert_authorities),
         ("Groups", c.groups),
         ("Group Members", c.group_members_all),
         ("Privileged Members", c.privileged_group_members),
+        ("Foreign Security Principals", c.foreign_sps),
         ("OUs", c.ous),
         ("Printers", c.printers),
         ("GPOs", c.gpos),
         ("GPO Links", c.gpo_links),
         ("DNS Records", c.dns_records),
+        ("ACLs (raw)", c.acls),
     ]
 
 

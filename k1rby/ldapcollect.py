@@ -11,6 +11,7 @@ from AD attributes — plus derived analysis ADRecon doesn't do.
 
 from __future__ import annotations
 
+import base64
 import datetime
 import struct
 from typing import Any
@@ -150,6 +151,16 @@ def _cn(dn: str) -> str:
         return ""
     first = dn.split(",", 1)[0]
     return first.split("=", 1)[1] if "=" in first else first
+
+
+def _dacl_ace_count(blob: bytes) -> int:
+    """ACE count from a self-relative SECURITY_DESCRIPTOR's DACL header (offset 16 = DACL offset)."""
+    if not blob or len(blob) < 20:
+        return 0
+    off_dacl = struct.unpack_from("<I", blob, 16)[0]
+    if not off_dacl or off_dacl + 6 > len(blob):
+        return 0
+    return struct.unpack_from("<H", blob, off_dacl + 4)[0]
 
 
 def _maxpwdage_days(v: Any) -> str:
@@ -585,7 +596,8 @@ class Collector:
                  "memberOf", "description", "info", "userWorkstations",
                  "msDS-AllowedToDelegateTo", "objectSid", "sIDHistory", "primaryGroupID",
                  "accountExpires", "mail", "manager", "department", "title", "company", "mobile",
-                 "homeDirectory", "profilePath", "scriptPath", "msDS-SupportedEncryptionTypes"]
+                 "homeDirectory", "profilePath", "scriptPath", "msDS-SupportedEncryptionTypes",
+                 "msDS-KeyCredentialLink"]
         raw = self._search("(&(objectCategory=person)(objectClass=user))", attrs)
         out = []
         for r in raw:
@@ -658,6 +670,7 @@ class Collector:
                 "distinguishedName": dn,
                 "canonicalName": _canonical(dn),
                 "uacFlags": "; ".join(uac_flags(uac)),
+                "keyCredentialLink": bool(r.get("msDS-KeyCredentialLink")),
                 "_dn": dn,
             })
         self._users_cache = out
@@ -671,7 +684,8 @@ class Collector:
                  "pwdLastSet", "whenCreated", "whenChanged", "objectSid", "sIDHistory",
                  "primaryGroupID", "description", "mS-DS-CreatorSID",
                  "msDS-AllowedToActOnBehalfOfOtherIdentity", "msDS-AllowedToDelegateTo",
-                 "servicePrincipalName"]
+                 "servicePrincipalName", "msDS-KeyCredentialLink", "ms-Mcs-AdmPwdExpirationTime",
+                 "msLAPS-PasswordExpirationTime", "msLAPS-EncryptedPassword"]
         raw = self._search("(objectClass=computer)", attrs)
         amap = self._dns_a_map()
         out = []
@@ -714,6 +728,10 @@ class Collector:
                 "whenCreated": _s(r.get("whenCreated")),
                 "whenChanged": _s(r.get("whenChanged")),
                 "distinguishedName": dn,
+                "keyCredentialLink": bool(r.get("msDS-KeyCredentialLink")),
+                "lapsLegacyExpiry": _s(r.get("ms-Mcs-AdmPwdExpirationTime")),
+                "lapsExpiry": _s(r.get("msLAPS-PasswordExpirationTime")),
+                "hasLaps": bool(r.get("ms-Mcs-AdmPwdExpirationTime") or r.get("msLAPS-PasswordExpirationTime") or r.get("msLAPS-EncryptedPassword")),
                 "_dn": dn,
             })
         self._computers_cache = out
@@ -833,6 +851,65 @@ class Collector:
                  "eku": _s(r.get("pKIExtendedKeyUsage")),
                  "raSignatures": _s(r.get("msPKI-RA-Signature")),
                  "created": _s(r.get("whenCreated"))} for r in rows]
+
+    def cert_authorities(self) -> list[dict]:
+        """AD CS enrollment services / CAs (pKIEnrollmentService) in the Config NC. Shows which CAs
+        exist and which templates each publishes — context for the certificate-templates sheet."""
+        base = (f"CN=Enrollment Services,CN=Public Key Services,CN=Services,"
+                f"CN=Configuration,{self.base}")
+        try:
+            rows = self._search("(objectClass=pKIEnrollmentService)",
+                                ["name", "displayName", "dNSHostName", "cACertificateDN",
+                                 "certificateTemplates", "flags", "whenCreated"], base=base)
+        except Exception:  # noqa: BLE001
+            return []
+        return [{"name": _s(r.get("name")), "displayName": _s(r.get("displayName")),
+                 "dnsHostName": _s(r.get("dNSHostName")), "caCertDN": _s(r.get("cACertificateDN")),
+                 "publishedTemplates": _s(r.get("certificateTemplates")),
+                 "flags": _s(r.get("flags")), "created": _s(r.get("whenCreated"))} for r in rows]
+
+    def foreign_sps(self) -> list[dict]:
+        """Foreign security principals (cross-domain/forest SIDs that appear in local groups)."""
+        rows = self._search("(objectClass=foreignSecurityPrincipal)", ["name", "objectSid"],
+                            base=f"CN=ForeignSecurityPrincipals,{self.base}")
+        return [{"name": _s(r.get("name")), "sid": _s(r.get("objectSid")) or _s(r.get("name")),
+                 "dn": r.get("_dn")} for r in rows]
+
+    def key_credentials(self) -> list[dict]:
+        """Objects carrying msDS-KeyCredentialLink (Key Trust / Windows Hello). Inventory only —
+        review which principals have key credentials; not inherently a finding."""
+        out = [{"object": u["sAMAccountName"], "type": "user"}
+               for u in self.users() if u.get("keyCredentialLink")]
+        out += [{"object": c["name"], "type": "computer"}
+                for c in self.computers() if c.get("keyCredentialLink")]
+        return out
+
+    def laps_coverage(self) -> list[dict]:
+        """Per-computer LAPS coverage map from the world-readable expiration-time attrs (works even
+        when the password itself is not readable). hasLaps False = machine has no LAPS configured."""
+        return [{"name": c["name"], "hasLaps": c.get("hasLaps", False),
+                 "lapsExpiry": c.get("lapsExpiry", ""), "lapsLegacyExpiry": c.get("lapsLegacyExpiry", "")}
+                for c in self.computers()]
+
+    def acls(self) -> list[dict]:
+        """Raw security descriptors captured on the pivot (offline path only). Reports the DACL ACE
+        count per object now; full ACE-rights decoding is a later off-host step. Empty on the live
+        scan path, where ACLs come from the bundled BloodHound collection instead."""
+        dump = getattr(self, "_dump", None)
+        if not dump:
+            return []
+        out = []
+        for r in dump.get("acls", []):
+            b = r.get("sd")
+            if not b:
+                continue
+            try:
+                raw = base64.b64decode(b)
+            except Exception:  # noqa: BLE001
+                continue
+            out.append({"object": _cn(r.get("_dn", "")), "daclAceCount": _dacl_ace_count(raw),
+                        "sdBytes": len(raw), "dn": r.get("_dn", "")})
+        return out
 
     def ds_heuristics(self) -> list[dict]:
         """dSHeuristics string on the Directory Service object. The 7th char == '2' enables
