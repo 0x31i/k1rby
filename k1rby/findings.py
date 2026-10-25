@@ -184,6 +184,106 @@ def _r_anon_ldap(s):
             for r in s.get("dSHeuristics", []) if r.get("anonymousAccess")]
 
 
+# --- PurpleKnight-parity rules (derive from already-collected data) --------------------------
+def _r_disabled_priv(s):
+    return [{"account": u.get("sAMAccountName"), "description": u.get("description")}
+            for u in s.get("Privileged Users", [])
+            if u.get("enabled") is False and str(u.get("sAMAccountName", "")).lower() != "krbtgt"]
+
+
+def _r_builtin_admin_oldpwd(s):
+    out = []
+    for u in s.get("Users", []):
+        age = u.get("pwdAgeDays")
+        if str(u.get("sid", "")).endswith("-500") and isinstance(age, int) and age > 180:
+            out.append({"account": u.get("sAMAccountName"), "pwdAgeDays": age})
+    return out
+
+
+def _r_stale_computer(s):
+    out = []
+    for c in s.get("Computers", []):
+        age = c.get("pwdAgeDays")
+        if c.get("enabled") and isinstance(age, int) and age > 90:
+            out.append({"computer": c.get("name"), "pwdAgeDays": age, "os": c.get("os")})
+    return out
+
+
+_EOL_OS = ("2000", "2003", "2008", "2012")
+
+
+def _r_eol_computer(s):
+    out = []
+    for c in s.get("Computers", []):
+        os_ = str(c.get("os", ""))
+        if c.get("enabled") and any(y in os_ for y in _EOL_OS):
+            out.append({"computer": c.get("name"), "os": os_})
+    return out
+
+
+def _r_priv_delegable(s):
+    return [{"account": u.get("sAMAccountName")} for u in s.get("Users", [])
+            if str(u.get("adminCount")) == "1" and u.get("enabled")
+            and u.get("delegationPermitted") and str(u.get("sAMAccountName", "")).lower() != "krbtgt"]
+
+
+def _r_spn_no_aes(s):
+    return [{"account": u.get("sAMAccountName"), "spn": u.get("spn")} for u in s.get("Users", [])
+            if u.get("hasSPN") and str(u.get("sAMAccountName", "")).lower() != "krbtgt"
+            and not (u.get("kerberosAES128") or u.get("kerberosAES256"))]
+
+
+def _r_schema_admins_nonempty(s):
+    return [{"member": m.get("memberDN")} for m in s.get("Privileged Members", [])
+            if str(m.get("group", "")).lower() == "schema admins"]
+
+
+def _r_pwd_never_expires_all(s):
+    return [{"account": u.get("sAMAccountName")} for u in s.get("Users", [])
+            if u.get("enabled") and u.get("pwdNeverExpires")
+            and str(u.get("sAMAccountName", "")).lower() != "krbtgt"]
+
+
+def _effective_priv_dns(s):
+    """DNs that are privileged via direct OR nested membership (transitive closure over the
+    collected Group Members), so the orphan-adminCount rule doesn't false-positive on nested admins."""
+    from collections import defaultdict
+    priv = {"domain admins", "enterprise admins", "schema admins", "administrators",
+            "account operators", "backup operators", "server operators", "print operators",
+            "dnsadmins"}
+    by_group = defaultdict(list)
+    for r in s.get("Group Members", []):
+        by_group[str(r.get("group", "")).lower()].append(r)
+    seen, frontier, dns = set(), set(priv), set()
+    while frontier:
+        g = frontier.pop()
+        if g in seen:
+            continue
+        seen.add(g)
+        for r in by_group.get(g, []):
+            dn = str(r.get("memberDN", "")).lower()
+            dns.add(dn)
+            if str(r.get("accountType", "")).lower().startswith("group"):
+                cn = dn.split(",", 1)[0]
+                if cn.startswith("cn="):
+                    frontier.add(cn[3:])
+    return dns
+
+
+def _r_orphan_admincount(s):
+    eff = _effective_priv_dns(s)
+    out = []
+    for u in s.get("Users", []):
+        if str(u.get("adminCount")) != "1" or str(u.get("sAMAccountName", "")).lower() == "krbtgt":
+            continue
+        if str(u.get("sid", "")).endswith("-500"):
+            continue
+        dn = str(u.get("distinguishedName", "")).lower()
+        if dn and dn not in eff:
+            out.append({"account": u.get("sAMAccountName"), "dn": u.get("distinguishedName")})
+    return out
+
+
 _RULES = [
     ("AD-001", "KRBTGT password not rotated (>180 days)", "critical", "Kerberos",
      "T1558.001 (Golden Ticket)",
@@ -282,6 +382,57 @@ _RULES = [
      "Anonymous LDAP lets an unauthenticated client enumerate directory objects, exposing recon "
      "data without any credential.",
      _r_anon_ldap),
+    ("AD-022", "Disabled account still flagged privileged (adminCount=1)", "low", "Accounts",
+     "T1078",
+     "Remove the disabled account from privileged groups and clear residual adminCount if stale.",
+     "A disabled account retaining privileged-group residue can be re-enabled as a quiet path back "
+     "to privilege.",
+     _r_disabled_priv),
+    ("AD-023", "Built-in Administrator password not rotated (>180 days)", "medium", "Accounts",
+     "T1078.001",
+     "Rotate the built-in Administrator (RID-500) password and restrict its use.",
+     "The RID-500 account cannot be locked out and is a prime offline/brute target; a stale "
+     "password widens that window.",
+     _r_builtin_admin_oldpwd),
+    ("AD-024", "Stale computer account (password unchanged >90 days)", "low", "Accounts",
+     "T1078",
+     "Disable and remove computer accounts that are no longer active (machine pwd auto-rotates ~30d).",
+     "A computer whose password has not changed in >90 days is likely orphaned/offline and is an "
+     "unmonitored account.",
+     _r_stale_computer),
+    ("AD-025", "Computer on an end-of-life operating system", "medium", "Infrastructure",
+     "T1210",
+     "Decommission or upgrade member hosts on unsupported Windows versions.",
+     "EOL hosts receive no security patches and are reliable lateral-movement footholds.",
+     _r_eol_computer),
+    ("AD-026", "Privileged account can be delegated", "medium", "Delegation",
+     "T1550",
+     "Mark privileged accounts 'sensitive and cannot be delegated' (or add them to Protected Users).",
+     "A privileged account that may be delegated can have its credentials captured and reused via a "
+     "delegation-enabled host.",
+     _r_priv_delegable),
+    ("AD-027", "Service account (SPN) without AES Kerberos encryption", "medium", "Kerberos",
+     "T1558.003 (Kerberoasting)",
+     "Enable AES on the account (clear RC4-only) so its service tickets aren't RC4-crackable.",
+     "An SPN account without AES yields RC4 service tickets that are far faster to crack offline.",
+     _r_spn_no_aes),
+    ("AD-028", "Schema Admins group is not empty", "high", "Accounts",
+     "T1078.002",
+     "Keep Schema Admins empty except during a planned, temporary schema change.",
+     "Schema Admins can alter the forest schema (a forest-wide, hard-to-reverse change); standing "
+     "membership is unnecessary risk.",
+     _r_schema_admins_nonempty),
+    ("AD-029", "Accounts configured with non-expiring passwords", "info", "Accounts",
+     "T1078",
+     "Remove DONT_EXPIRE_PASSWORD except for vetted service accounts (prefer gMSA).",
+     "Passwords that never expire persist indefinitely if ever exposed.",
+     _r_pwd_never_expires_all),
+    ("AD-030", "Non-privileged account carries adminCount=1 (AdminSDHolder residue)", "low",
+     "Accounts", "T1098",
+     "Clear adminCount and re-enable inheritance on accounts no longer in a protected group.",
+     "adminCount=1 on an account that is no longer (directly or via nesting) in a protected group "
+     "leaves AdminSDHolder-tightened ACLs and signals past/stale privilege worth reviewing.",
+     _r_orphan_admincount),
 ]
 
 
