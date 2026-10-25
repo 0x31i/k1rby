@@ -37,6 +37,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if (-not $Out)  { $Out  = "$Domain-dump.json" }
+# Resolve -Out to an ABSOLUTE path against the caller's PowerShell location. .NET's
+# System.IO (used to write the dump) resolves relative paths against [Environment]::CurrentDirectory,
+# which does NOT track Set-Location/cd in a long-lived (esp. elevated) session — so a relative -Out
+# would silently land in a stale dir (often C:\Windows\System32). GetUnresolvedProviderPathFromPSPath
+# handles not-yet-existing files and resolves against $PWD, keeping .NET and PowerShell in agreement.
+$Out = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Out)
 if (-not $Base) { $Base = 'DC=' + ($Domain -split '\.' -join ',DC=') }
 if (-not $Port) { $Port = if ($Ssl) { 636 } else { 389 } }
 
@@ -355,5 +361,12 @@ $conn.Dispose()
 # ---- write dump -------------------------------------------------------------------------------
 $json = $dump | ConvertTo-Json -Depth 8
 [System.IO.File]::WriteAllText($Out, $json, (New-Object System.Text.UTF8Encoding($false)))
-W "wrote $Out ($([math]::Round((Get-Item $Out).Length/1KB)) KB)"
+# $Out is absolute (resolved above), so .NET wrote it here and Test-Path/Get-Item agree. Report
+# defensively: a stat hiccup must never mask a successful write.
+if (Test-Path -LiteralPath $Out) {
+  $kb = [math]::Round((Get-Item -LiteralPath $Out).Length / 1KB)
+  W "wrote $Out ($kb KB)"
+} else {
+  W "WARNING: dump not found at $Out after write — check path/permissions"
+}
 W "next (off-host, Linux): k1rby offline `"$Out`" -o <CLIENT>-AD-Assessment.xlsx"
