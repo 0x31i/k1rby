@@ -167,6 +167,18 @@ def _r_external_trusts(s):
     return [t for t in s.get("Trusts", []) if t.get("direction") in ("Bidirectional", "Outbound", "Inbound")]
 
 
+def _r_schema_markers(s):
+    markers = {"ms-mcs-admpwd": "LAPS (legacy)", "mslaps-password": "Windows LAPS",
+               "mspki-certificate-templates": "AD CS", "ms-exch-schema-version-pt": "Exchange"}
+    hits = []
+    for r in s.get("Schema History", []):
+        ln = str(r.get("ldapName", "")).lower()
+        if ln in markers:
+            hits.append({"feature": markers[ln], "schemaObject": r.get("name"),
+                         "added": r.get("created")})
+    return hits
+
+
 _RULES = [
     ("AD-001", "KRBTGT password not rotated (>180 days)", "critical", "Kerberos",
      "T1558.001 (Golden Ticket)",
@@ -253,6 +265,12 @@ _RULES = [
      "Review trust direction/type; ensure SID filtering on external trusts.",
      "Trusts expand the attack surface across security boundaries.",
      _r_external_trusts),
+    ("AD-020", "Security-relevant schema extensions present", "info", "Infrastructure",
+     "T1087",
+     "Confirm LAPS/AD CS/Exchange are configured and access-scoped; an empty LAPS sheet with the "
+     "LAPS schema present confirms read access is correctly privilege-gated (not that LAPS is absent).",
+     "Schema extensions reveal deployed features (LAPS, AD CS, Exchange) worth auditing/targeting.",
+     _r_schema_markers),
 ]
 
 

@@ -201,7 +201,7 @@ $dump.users = Collect 'Users' $Base '(&(objectCategory=person)(objectClass=user)
 $dump.computers = Collect 'Computers' $Base '(objectClass=computer)' `
   @('name','sAMAccountName','dNSHostName','operatingSystem','operatingSystemVersion',
     'lastLogonTimestamp','userAccountControl','pwdLastSet','whenCreated','whenChanged','objectSid',
-    'sIDHistory','primaryGroupID','description','mS-DS-CreatorSID',
+    'sIDHistory','primaryGroupID','description','mS-DS-CreatorSID','servicePrincipalName',
     'msDS-AllowedToActOnBehalfOfOtherIdentity','msDS-AllowedToDelegateTo') `
   @('objectSid','sIDHistory','mS-DS-CreatorSID') `
   @('msDS-AllowedToActOnBehalfOfOtherIdentity')
@@ -229,6 +229,15 @@ $dump.sites = Collect 'Sites' "CN=Sites,CN=Configuration,$Base" '(objectClass=si
 
 $dump.subnets = Collect 'Subnets' "CN=Subnets,CN=Sites,CN=Configuration,$Base" '(objectClass=subnet)' `
   @('name','siteObject','description')
+
+# ---- published printers (printQueue) — Authenticated-Users readable ---------------------------
+$dump.printers = Collect 'Printers' $Base '(objectClass=printQueue)' `
+  @('printerName','serverName','driverName','portName','location','uNCName','whenCreated')
+
+# ---- schema extension history (schema NC) — Authenticated-Users readable ----------------------
+$dump.schema_history = Collect 'SchemaHistory' "CN=Schema,CN=Configuration,$Base" `
+  '(|(objectClass=classSchema)(objectClass=attributeSchema))' `
+  @('name','lDAPDisplayName','objectClass','whenCreated','whenChanged')
 
 # ---- privileged group direct members ----------------------------------------------------------
 $privGroups = @('Domain Admins','Enterprise Admins','Schema Admins','Administrators',

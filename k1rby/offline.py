@@ -39,6 +39,8 @@ Dump schema (JSON, produced by windows/collect.ps1)
   "fgpp": [...], "domain_controllers": [...], "trusts": [...], "users": [...],
   "computers": [...], "groups": [...], "ous": [...], "gpos": [...], "sites": [...],
   "subnets": [...], "laps": [...],                 # laps entries carry all 4 LAPS attrs
+  "printers": [...],              # printQueue objects (printerName/serverName/driverName/...)
+  "schema_history": [...],        # classSchema/attributeSchema w/ name,lDAPDisplayName,whenCreated
   "gpo_containers": [...],        # OUs + domainDNS carrying gPLink/gPOptions/name
   "gpo_site_containers": [...],   # site objects carrying gPLink/gPOptions/name
 
@@ -171,6 +173,10 @@ class _FakeConn:
             return "gpo_site_containers" if "gPLink" in a else "sites"
         if flt == "(objectClass=subnet)":
             return "subnets"
+        if flt == "(objectClass=printQueue)":
+            return "printers"
+        if flt == "(|(objectClass=classSchema)(objectClass=attributeSchema))":
+            return "schema_history"
         return None
 
     # -- BASE / explicit path: Collector.*() -> conn.search(); then reads conn.entries ---------

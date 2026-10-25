@@ -660,7 +660,8 @@ class Collector:
                  "operatingSystemVersion", "lastLogonTimestamp", "userAccountControl",
                  "pwdLastSet", "whenCreated", "whenChanged", "objectSid", "sIDHistory",
                  "primaryGroupID", "description", "mS-DS-CreatorSID",
-                 "msDS-AllowedToActOnBehalfOfOtherIdentity", "msDS-AllowedToDelegateTo"]
+                 "msDS-AllowedToActOnBehalfOfOtherIdentity", "msDS-AllowedToDelegateTo",
+                 "servicePrincipalName"]
         raw = self._search("(objectClass=computer)", attrs)
         amap = self._dns_a_map()
         out = []
@@ -698,6 +699,8 @@ class Collector:
                 "rbcd": rbcd,
                 "description": _s(r.get("description")),
                 "userAccountControl": _s(uac),
+                "hasSPN": bool(r.get("servicePrincipalName")),
+                "spn": _s(r.get("servicePrincipalName")),
                 "whenCreated": _s(r.get("whenCreated")),
                 "whenChanged": _s(r.get("whenChanged")),
                 "distinguishedName": dn,
@@ -765,6 +768,16 @@ class Collector:
                  "created": _s(r.get("whenCreated")), "changed": _s(r.get("whenChanged"))}
                 for r in rows]
 
+    def printers(self) -> list[dict]:
+        """Published printers (printQueue) — readable by Authenticated Users. ADRecon parity."""
+        rows = self._search("(objectClass=printQueue)",
+                            ["printerName", "serverName", "driverName", "portName",
+                             "location", "uNCName", "whenCreated"])
+        return [{"printerName": _s(r.get("printerName")), "server": _s(r.get("serverName")),
+                 "driver": _s(r.get("driverName")), "port": _s(r.get("portName")),
+                 "location": _s(r.get("location")), "uncName": _s(r.get("uNCName")),
+                 "created": _s(r.get("whenCreated")), "dn": r.get("_dn")} for r in rows]
+
     # ---- derived (computed from users/computers, no extra queries) ----------------------------
     def kerberoastable(self) -> list[dict]:
         return [{"sAMAccountName": u["sAMAccountName"], "enabled": u["enabled"],
@@ -776,6 +789,19 @@ class Collector:
         return [{"sAMAccountName": u["sAMAccountName"], "enabled": u["enabled"],
                  "adminCount": u["adminCount"], "pwdLastSet": u["pwdLastSet"]}
                 for u in self.users() if u["asrepRoastable"]]
+
+    def computer_spns(self) -> list[dict]:
+        """One row per computer SPN (derived from computers(), no extra query). ADRecon parity:
+        inventory of service principals exposed on machine accounts."""
+        out = []
+        for c in self.computers():
+            if not c.get("spn"):
+                continue
+            for spn in c["spn"].split("; "):
+                if spn:
+                    out.append({"computer": c["name"], "dnsHostName": c["dnsHostName"],
+                                "enabled": c["enabled"], "spn": spn})
+        return out
 
     def delegation(self) -> list[dict]:
         out = []
@@ -819,6 +845,28 @@ class Collector:
             "namingContexts": _s(getattr(info, "naming_contexts", "")),
             "dnsHostName": g("dnsHostName"),
         }]
+
+    def schema_history(self) -> list[dict]:
+        """classSchema/attributeSchema in the schema NC with creation dates — readable by
+        Authenticated Users. Reveals deployed features (LAPS, AD CS, Exchange) and, paired with an
+        empty LAPS sheet, confirms LAPS is deployed-but-privilege-gated rather than absent."""
+        base = f"CN=Schema,CN=Configuration,{self.base}"
+        try:
+            rows = self._search("(|(objectClass=classSchema)(objectClass=attributeSchema))",
+                                ["name", "lDAPDisplayName", "objectClass",
+                                 "whenCreated", "whenChanged"], base=base)
+        except Exception:  # noqa: BLE001
+            return []
+        out = []
+        for r in rows:
+            oc = r.get("objectClass")
+            oc = oc if isinstance(oc, list) else [oc]
+            kind = "class" if "classSchema" in oc else "attribute"
+            out.append({"name": _s(r.get("name")), "ldapName": _s(r.get("lDAPDisplayName")),
+                        "kind": kind, "created": _s(r.get("whenCreated")),
+                        "changed": _s(r.get("whenChanged"))})
+        out.sort(key=lambda x: x["created"], reverse=True)
+        return out
 
     def sites(self) -> list[dict]:
         base = f"CN=Sites,CN=Configuration,{self.base}"
