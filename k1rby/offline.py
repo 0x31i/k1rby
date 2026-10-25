@@ -42,6 +42,9 @@ Dump schema (JSON, produced by windows/collect.ps1)
   "printers": [...],              # printQueue objects (printerName/serverName/driverName/...)
   "schema_history": [...],        # classSchema/attributeSchema w/ name,lDAPDisplayName,whenCreated
   "bitlocker": [...],             # msFVE-RecoveryInformation (DA-gated; empty on a user run)
+  "gmsa": [...],                  # msDS-GroupManagedServiceAccount accounts
+  "cert_templates": [...],        # AD CS pKICertificateTemplate objects (Config NC)
+  "ds_heuristics": [...],         # 1-row dSHeuristics config flags
   "gpo_containers": [...],        # OUs + domainDNS carrying gPLink/gPOptions/name
   "gpo_site_containers": [...],   # site objects carrying gPLink/gPOptions/name
 
@@ -180,6 +183,12 @@ class _FakeConn:
             return "schema_history"
         if flt == "(objectClass=msFVE-RecoveryInformation)":
             return "bitlocker"
+        if flt == "(objectClass=msDS-GroupManagedServiceAccount)":
+            return "gmsa"
+        if flt == "(objectClass=pKICertificateTemplate)":
+            return "cert_templates"
+        if flt == "(objectClass=nTDSService)":
+            return "ds_heuristics"
         return None
 
     # -- BASE / explicit path: Collector.*() -> conn.search(); then reads conn.entries ---------

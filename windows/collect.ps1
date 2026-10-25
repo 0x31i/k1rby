@@ -245,6 +245,19 @@ $dump.schema_history = Collect 'SchemaHistory' "CN=Schema,CN=Configuration,$Base
 $dump.bitlocker = Collect 'BitLocker' $Base '(objectClass=msFVE-RecoveryInformation)' `
   @('name','msFVE-RecoveryGuid','msFVE-VolumeGuid','msFVE-RecoveryPassword','whenCreated')
 
+# ---- group managed service accounts (gMSA) — Authenticated-Users readable --------------------
+$dump.gmsa = Collect 'gMSA' $Base '(objectClass=msDS-GroupManagedServiceAccount)' `
+  @('name','sAMAccountName','dNSHostName','msDS-ManagedPasswordInterval','userAccountControl','whenCreated')
+
+# ---- AD CS certificate templates (Config NC) — Authenticated-Users readable ------------------
+$dump.cert_templates = Collect 'CertTemplates' "CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,$Base" `
+  '(objectClass=pKICertificateTemplate)' `
+  @('name','displayName','msPKI-Certificate-Name-Flag','msPKI-Enrollment-Flag','pKIExtendedKeyUsage','msPKI-RA-Signature','whenCreated')
+
+# ---- dSHeuristics (directory-service config flags; anonymous-LDAP indicator) ------------------
+$dump.ds_heuristics = Collect 'dSHeuristics' "CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,$Base" `
+  '(objectClass=nTDSService)' @('dSHeuristics')
+
 # ---- privileged group direct members ----------------------------------------------------------
 $privGroups = @('Domain Admins','Enterprise Admins','Schema Admins','Administrators',
                 'Account Operators','Backup Operators','Server Operators','Print Operators','DnsAdmins')

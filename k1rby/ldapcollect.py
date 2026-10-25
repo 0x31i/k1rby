@@ -805,6 +805,50 @@ class Collector:
                         "created": _s(r.get("whenCreated")), "dn": dn})
         return out
 
+    def gmsa(self) -> list[dict]:
+        """Group Managed Service Accounts (msDS-GroupManagedServiceAccount). ADRecon parity."""
+        rows = self._search("(objectClass=msDS-GroupManagedServiceAccount)",
+                            ["name", "sAMAccountName", "dNSHostName",
+                             "msDS-ManagedPasswordInterval", "userAccountControl", "whenCreated"])
+        return [{"name": _s(r.get("name")), "sAMAccountName": _s(r.get("sAMAccountName")),
+                 "dnsHostName": _s(r.get("dNSHostName")),
+                 "pwdIntervalDays": _s(r.get("msDS-ManagedPasswordInterval")),
+                 "enabled": not _has(r.get("userAccountControl"), "ACCOUNTDISABLE"),
+                 "created": _s(r.get("whenCreated")), "dn": r.get("_dn")} for r in rows]
+
+    def cert_templates(self) -> list[dict]:
+        """AD CS certificate templates (pKICertificateTemplate) in the Config NC. ADRecon parity."""
+        base = (f"CN=Certificate Templates,CN=Public Key Services,CN=Services,"
+                f"CN=Configuration,{self.base}")
+        try:
+            rows = self._search("(objectClass=pKICertificateTemplate)",
+                                ["name", "displayName", "msPKI-Certificate-Name-Flag",
+                                 "msPKI-Enrollment-Flag", "pKIExtendedKeyUsage",
+                                 "msPKI-RA-Signature", "whenCreated"], base=base)
+        except Exception:  # noqa: BLE001
+            return []
+        return [{"name": _s(r.get("name")), "displayName": _s(r.get("displayName")),
+                 "nameFlag": _s(r.get("msPKI-Certificate-Name-Flag")),
+                 "enrollFlag": _s(r.get("msPKI-Enrollment-Flag")),
+                 "eku": _s(r.get("pKIExtendedKeyUsage")),
+                 "raSignatures": _s(r.get("msPKI-RA-Signature")),
+                 "created": _s(r.get("whenCreated"))} for r in rows]
+
+    def ds_heuristics(self) -> list[dict]:
+        """dSHeuristics string on the Directory Service object. The 7th char == '2' enables
+        anonymous LDAP bind/read; the 3rd char == '1' enables List-Object access mode."""
+        base = f"CN=Directory Service,CN=Windows NT,CN=Services,CN=Configuration,{self.base}"
+        try:
+            rows = self._search("(objectClass=nTDSService)", ["dSHeuristics"], base=base)
+        except Exception:  # noqa: BLE001
+            return []
+        val = _s(rows[0].get("dSHeuristics")) if rows else ""
+        if not val:
+            return []
+        return [{"dSHeuristics": val,
+                 "anonymousAccess": (len(val) >= 7 and val[6] == "2"),
+                 "listObjectMode": (len(val) >= 3 and val[2] == "1")}]
+
     # ---- derived (computed from users/computers, no extra queries) ----------------------------
     def kerberoastable(self) -> list[dict]:
         return [{"sAMAccountName": u["sAMAccountName"], "enabled": u["enabled"],

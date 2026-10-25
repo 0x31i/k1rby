@@ -31,6 +31,7 @@ def _steps(c):
     return [
         ("Domain", c.domain_info),
         ("Forest", c.forest_info),
+        ("dSHeuristics", c.ds_heuristics),
         ("Schema History", c.schema_history),
         ("Password Policies (FGPP)", c.password_policies_fgpp),
         ("Password Policy (Compliance)", c.password_policy_compliance),
@@ -47,6 +48,8 @@ def _steps(c):
         ("Computer SPNs", c.computer_spns),
         ("LAPS", c.laps),
         ("BitLocker", c.bitlocker),
+        ("gMSA", c.gmsa),
+        ("Certificate Templates", c.cert_templates),
         ("Groups", c.groups),
         ("Group Members", c.group_members_all),
         ("Privileged Members", c.privileged_group_members),

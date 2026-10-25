@@ -179,6 +179,11 @@ def _r_schema_markers(s):
     return hits
 
 
+def _r_anon_ldap(s):
+    return [{"dSHeuristics": r.get("dSHeuristics")}
+            for r in s.get("dSHeuristics", []) if r.get("anonymousAccess")]
+
+
 _RULES = [
     ("AD-001", "KRBTGT password not rotated (>180 days)", "critical", "Kerberos",
      "T1558.001 (Golden Ticket)",
@@ -271,6 +276,12 @@ _RULES = [
      "LAPS schema present confirms read access is correctly privilege-gated (not that LAPS is absent).",
      "Schema extensions reveal deployed features (LAPS, AD CS, Exchange) worth auditing/targeting.",
      _r_schema_markers),
+    ("AD-021", "Anonymous LDAP access enabled (dSHeuristics)", "high", "Configuration",
+     "T1087",
+     "Clear the 7th character of dSHeuristics (set it to 0) to disable anonymous LDAP binds/reads.",
+     "Anonymous LDAP lets an unauthenticated client enumerate directory objects, exposing recon "
+     "data without any credential.",
+     _r_anon_ldap),
 ]
 
 
