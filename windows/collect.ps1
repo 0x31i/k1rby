@@ -1,5 +1,5 @@
 <#
-  Active Directory LDAP collector (read-only) — Windows pivot edition.
+  Active Directory LDAP collector (read-only) - Windows pivot edition.
 
   Purpose
     Perform ONLY read-only LDAP searches against a domain controller and write the raw results
@@ -12,7 +12,7 @@
     no modules, no compilation (no Add-Type -TypeDefinition / csc.exe), no reflection, and no
     network download. Run it from disk (sign it if you have a cert). It is intended for AUTHORIZED
     assessments only; deconflict the characteristic LDAP activity with the client's blue team
-    (source-IP allowlist + timebox) — this tool does not and should not try to make the queries
+    (source-IP allowlist + timebox) - this tool does not and should not try to make the queries
     themselves quieter.
 
   Usage
@@ -39,7 +39,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $Out)  { $Out  = "$Domain-dump.json" }
 # Resolve -Out to an ABSOLUTE path against the caller's PowerShell location. .NET's
 # System.IO (used to write the dump) resolves relative paths against [Environment]::CurrentDirectory,
-# which does NOT track Set-Location/cd in a long-lived (esp. elevated) session — so a relative -Out
+# which does NOT track Set-Location/cd in a long-lived (esp. elevated) session - so a relative -Out
 # would silently land in a stale dir (often C:\Windows\System32). GetUnresolvedProviderPathFromPSPath
 # handles not-yet-existing files and resolves against $PWD, keeping .NET and PowerShell in agreement.
 $Out = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Out)
@@ -71,7 +71,7 @@ function Get-Sid([byte[]]$b){
 }
 
 # Convert one entry to an ordered dict keyed by the REQUESTED attribute names (stable casing),
-# plus _dn. $Sid = attrs to render as S-1-5-… ; $Present = attrs we only need truthiness for.
+# plus _dn. $Sid = attrs to render as S-1-5-... ; $Present = attrs we only need truthiness for.
 function Convert-Entry($entry, [string[]]$attrs, [string[]]$Sid, [string[]]$Present){
   $o = [ordered]@{ _dn = [string]$entry.DistinguishedName }
   foreach ($name in $attrs) {
@@ -239,30 +239,30 @@ $dump.sites = Collect 'Sites' "CN=Sites,CN=Configuration,$Base" '(objectClass=si
 $dump.subnets = Collect 'Subnets' "CN=Subnets,CN=Sites,CN=Configuration,$Base" '(objectClass=subnet)' `
   @('name','siteObject','description')
 
-# ---- published printers (printQueue) — Authenticated-Users readable ---------------------------
+# ---- published printers (printQueue) - Authenticated-Users readable ---------------------------
 $dump.printers = Collect 'Printers' $Base '(objectClass=printQueue)' `
   @('printerName','serverName','driverName','portName','location','uNCName','whenCreated')
 
-# ---- schema extension history (schema NC) — Authenticated-Users readable ----------------------
+# ---- schema extension history (schema NC) - Authenticated-Users readable ----------------------
 $dump.schema_history = Collect 'SchemaHistory' "CN=Schema,CN=Configuration,$Base" `
   '(|(objectClass=classSchema)(objectClass=attributeSchema))' `
   @('name','lDAPDisplayName','objectClass','whenCreated','whenChanged')
 
-# ---- BitLocker recovery keys (msFVE-RecoveryInformation) — DA-gated; empty on a user run -------
+# ---- BitLocker recovery keys (msFVE-RecoveryInformation) - DA-gated; empty on a user run -------
 # Recovery passwords are confidential: readable by Domain Admins / the computer object / delegates.
 $dump.bitlocker = Collect 'BitLocker' $Base '(objectClass=msFVE-RecoveryInformation)' `
   @('name','msFVE-RecoveryGuid','msFVE-VolumeGuid','msFVE-RecoveryPassword','whenCreated')
 
-# ---- group managed service accounts (gMSA) — Authenticated-Users readable --------------------
+# ---- group managed service accounts (gMSA) - Authenticated-Users readable --------------------
 $dump.gmsa = Collect 'gMSA' $Base '(objectClass=msDS-GroupManagedServiceAccount)' `
   @('name','sAMAccountName','dNSHostName','msDS-ManagedPasswordInterval','userAccountControl','whenCreated')
 
-# ---- AD CS certificate templates (Config NC) — Authenticated-Users readable ------------------
+# ---- AD CS certificate templates (Config NC) - Authenticated-Users readable ------------------
 $dump.cert_templates = Collect 'CertTemplates' "CN=Certificate Templates,CN=Public Key Services,CN=Services,CN=Configuration,$Base" `
   '(objectClass=pKICertificateTemplate)' `
   @('name','displayName','msPKI-Certificate-Name-Flag','msPKI-Enrollment-Flag','pKIExtendedKeyUsage','msPKI-RA-Signature','whenCreated')
 
-# ---- AD CS enrollment services / CAs (Config NC) — Authenticated-Users readable ---------------
+# ---- AD CS enrollment services / CAs (Config NC) - Authenticated-Users readable ---------------
 $dump.cert_cas = Collect 'CertCAs' "CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=Configuration,$Base" `
   '(objectClass=pKIEnrollmentService)' `
   @('name','displayName','dNSHostName','cACertificateDN','certificateTemplates','flags','whenCreated')
@@ -302,7 +302,7 @@ try {
 $dump.laps = $laps
 W "LAPS readable: $($laps.Count)"
 
-# ---- DNS (dnsNode blobs, base64 — parsed off-host) --------------------------------------------
+# ---- DNS (dnsNode blobs, base64 - parsed off-host) --------------------------------------------
 $dnsNodes = New-Object System.Collections.ArrayList
 foreach ($zb in @("CN=MicrosoftDNS,DC=DomainDnsZones,$Base",
                   "CN=MicrosoftDNS,DC=ForestDnsZones,$Base",
@@ -367,6 +367,6 @@ if (Test-Path -LiteralPath $Out) {
   $kb = [math]::Round((Get-Item -LiteralPath $Out).Length / 1KB)
   W "wrote $Out ($kb KB)"
 } else {
-  W "WARNING: dump not found at $Out after write — check path/permissions"
+  W "WARNING: dump not found at $Out after write - check path/permissions"
 }
 W "next (off-host, Linux): k1rby offline `"$Out`" -o <CLIENT>-AD-Assessment.xlsx"
