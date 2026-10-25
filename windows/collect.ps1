@@ -42,7 +42,6 @@ if (-not $Port) { $Port = if ($Ssl) { 636 } else { 389 } }
 
 Add-Type -AssemblyName System.DirectoryServices.Protocols
 
-$P   = [System.DirectoryServices.Protocols]
 $SC  = [System.DirectoryServices.Protocols.SearchScope]
 function W([string]$m){ [Console]::Error.WriteLine("[*] $m") }
 
