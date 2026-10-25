@@ -3,9 +3,15 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from openpyxl import Workbook
+
+# Chars the XML spec (and thus xlsx) forbids in a cell; openpyxl raises IllegalCharacterError on
+# them. They can leak in from raw binary attrs that stringify with control bytes (e.g. a malformed
+# DNS SOA record). Strip them so one bad value can never crash the whole workbook.
+_ILLEGAL_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -52,8 +58,12 @@ def _fmt(v: Any) -> Any:
     if isinstance(v, bool):
         return "YES" if v else "no"
     if isinstance(v, (list, tuple)):
-        return "; ".join(str(x) for x in v)
-    return "" if v is None else v
+        return _ILLEGAL_XML.sub("", "; ".join(str(x) for x in v))
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return _ILLEGAL_XML.sub("", v)
+    return v
 
 
 def _findings_sheet(wb: Workbook, findings: list) -> None:
