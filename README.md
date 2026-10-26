@@ -27,7 +27,8 @@ read-only collector on a Windows pivot that does **no** analysis on-host.
 | | ADRecon | k1rby |
 |---|---|---|
 | Inventory sheets | ✅ | ✅ (parity) |
-| **Findings + severity** | ❌ (raw data only) | ✅ 21 rules, MITRE-mapped |
+| **Findings + severity** | ❌ (raw data only) | ✅ 34 rules, MITRE-mapped |
+| **ACL-rights analysis (DCSync / AdminSDHolder / priv-object takeover)** | ❌ | ✅ off-host SD decode |
 | **Posture score** | ❌ | ✅ 0–100 |
 | **Modern HTML dashboard** | ❌ (xlsx only) | ✅ score, donut, ranked findings |
 | **BloodHound graph** | ❌ | ✅ bundled DCOnly collection |
@@ -117,12 +118,21 @@ compilation, no reflection, no network download.
 
 ## Findings
 
-21 severity-rated rules (AD-001 … AD-021), each MITRE-mapped with remediation and the list of
+34 severity-rated rules (AD-001 … AD-034), each MITRE-mapped with remediation and the list of
 affected objects, feeding a 0–100 posture score. Coverage includes: stale krbtgt, unconstrained
 delegation on non-DCs, Kerberoastable / AS-REP-roastable privileged accounts, EOL domain
-controllers, machine-account-quota abuse, weak or no-lockout password policy, password-not-
-required / never-expires / reversible-encryption accounts, stale privileged accounts, readable
-LAPS, active trusts, security-relevant schema extensions, and anonymous-LDAP via dSHeuristics.
+controllers and member hosts, machine-account-quota abuse, weak or no-lockout password policy,
+password-not-required / never-expires / reversible-encryption accounts, stale privileged and
+computer accounts, readable LAPS, active trusts, security-relevant schema extensions, anonymous-
+LDAP via dSHeuristics, non-empty Schema Admins, delegable/RC4-only privileged accounts, DCs that
+still accept RC4/DES, orphaned adminCount residue, and an **off-host ACL-rights analysis** of the
+captured security descriptors: **DCSync** rights held by non-default principals, dangerous rights
+on **AdminSDHolder**, and non-default principals with takeover rights (GenericAll/WriteDacl/
+WriteOwner/GenericWrite/force-password-reset) over privileged objects.
+
+The posture score (100 = clean) uses a multiplicative *defense-erosion* model: each finding erodes
+a fraction of the remaining score by severity (saturating with object count), so impact compounds
+but a handful of serious findings never instantly floor the score at 0.
 
 ## Running the live scan through a pivot (Linux path)
 

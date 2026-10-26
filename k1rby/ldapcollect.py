@@ -897,9 +897,13 @@ class Collector:
                 for c in self.computers()]
 
     def acls(self) -> list[dict]:
-        """Raw security descriptors captured on the pivot (offline path only). Reports the DACL ACE
-        count per object now; full ACE-rights decoding is a later off-host step. Empty on the live
-        scan path, where ACLs come from the bundled BloodHound collection instead."""
+        """Security descriptors captured on the pivot (offline path only). Decodes each DACL
+        off-host: ACE count, owner SID, and the takeover-relevant ('dangerous') ACEs — GenericAll/
+        GenericWrite/WriteDacl/WriteOwner, unscoped WriteProperty/Self, and ExtendedRights incl. the
+        DCSync replication rights and force-password-reset. SID resolution and default-principal
+        filtering happen in the findings layer (which has the directory's SID->name map). Empty on
+        the live scan path, where ACLs come from the bundled BloodHound collection instead."""
+        from . import sddl
         dump = getattr(self, "_dump", None)
         if not dump:
             return []
@@ -912,8 +916,18 @@ class Collector:
                 raw = base64.b64decode(b)
             except Exception:  # noqa: BLE001
                 continue
+            sd = sddl.parse(raw)
+            dang = sddl.dangerous_aces(sd) if sd else []
+            # sheet columns count only non-default holders (the anomalous grants); findings get the
+            # full list via _dangerous and do their own name-aware default filtering.
+            anom = [a for a in dang if not sddl.is_expected_sid(a.get("sid", ""))]
+            rights = sorted({r2 for a in anom for r2 in a.get("rights", [])})
+            summary = f"{len(anom)} non-default risky ACE(s): {', '.join(rights)}" if anom else ""
             out.append({"object": _cn(r.get("_dn", "")), "daclAceCount": _dacl_ace_count(raw),
-                        "sdBytes": len(raw), "dn": r.get("_dn", "")})
+                        "sdBytes": len(raw), "owner": (sd or {}).get("owner", ""),
+                        "dangerousCount": len(anom), "dangerousSummary": summary,
+                        "kind": r.get("kind", ""), "dn": r.get("_dn", ""),
+                        "_dangerous": dang})
         return out
 
     def ds_heuristics(self) -> list[dict]:

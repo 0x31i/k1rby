@@ -13,6 +13,10 @@ from dataclasses import dataclass, field
 
 SEV_ORDER = ["critical", "high", "medium", "low", "info"]
 _SEV_WEIGHT = {"critical": 25, "high": 12, "medium": 5, "low": 1, "info": 0}
+# Per-finding fraction of the *remaining* posture that a finding of each severity erodes. Used by
+# posture_score's multiplicative model (see there). Chosen so a single critical lands ~78 and a
+# badly-misconfigured domain trends toward the teens without ever flooring at 0.
+_SEV_IMPACT = {"critical": 0.22, "high": 0.10, "medium": 0.04, "low": 0.01, "info": 0.0}
 
 
 @dataclass
@@ -294,6 +298,143 @@ def _r_orphan_admincount(s):
     return out
 
 
+# --- ACL rights analysis (consumes the off-host-decoded DACLs in the "ACLs (raw)" section) -----
+_PRIV_GROUP_NAMES = {"domain admins", "enterprise admins", "schema admins", "administrators",
+                     "account operators", "backup operators", "server operators",
+                     "print operators", "dnsadmins", "key admins", "enterprise key admins",
+                     "group policy creator owners", "cert publishers"}
+
+
+def _sid_name_map(s):
+    """SID -> (name, kind) over everything collected, so ACE holder SIDs resolve to principals."""
+    m = {}
+    for u in s.get("Users", []):
+        if u.get("sid"):
+            m[str(u["sid"])] = (u.get("sAMAccountName"), "user")
+    for g in s.get("Groups", []):
+        if g.get("sid"):
+            m[str(g["sid"])] = (g.get("name"), "group")
+    for c in s.get("Computers", []):
+        if c.get("sid"):
+            m[str(c["sid"])] = (c.get("name"), "computer")
+    for f in s.get("Foreign Security Principals", []):
+        if f.get("sid"):
+            m[str(f["sid"])] = (f.get("name"), "foreign")
+    return m
+
+
+def _is_default_holder(sid, name):
+    """True for principals whose broad control over objects is expected (built-in admin SIDs /
+    the standard privileged RIDs), so they aren't reported as anomalous ACL grants."""
+    from . import sddl
+    if sid in sddl.WELLKNOWN_EXPECTED:
+        return True
+    rid = sddl.rid_of(sid or "")
+    if rid in sddl.EXPECTED_RIDS:
+        return True
+    return str(name or "").lower() in {"domain admins", "enterprise admins", "schema admins",
+                                       "administrators", "domain controllers",
+                                       "enterprise domain controllers", "administrator"}
+
+
+def _sensitive_dns(s):
+    """DNs of objects whose compromise = privilege: privileged groups themselves, any adminCount=1
+    user/group, and every principal that is privileged by direct or nested membership."""
+    out = set(_effective_priv_dns(s))
+    for g in s.get("Groups", []):
+        dn = str(g.get("_dn") or g.get("distinguishedName") or "").lower()
+        if dn and (str(g.get("name", "")).lower() in _PRIV_GROUP_NAMES
+                   or str(g.get("adminCount")) == "1"):
+            out.add(dn)
+    for u in s.get("Users", []):
+        if str(u.get("adminCount")) == "1":
+            dn = str(u.get("distinguishedName", "")).lower()
+            if dn:
+                out.add(dn)
+    return out
+
+
+def _dn_is_domain_head(dn):
+    parts = [p for p in str(dn).split(",") if p.strip()]
+    return bool(parts) and all(p.strip().upper().startswith("DC=") for p in parts)
+
+
+def _r_acl_dcsync(s):
+    """Non-default principals holding DCSync rights on the domain head (DS-Replication-Get-Changes
+    + ...-All, or GenericAll). Needs the domain-root SD (captured as kind='domain')."""
+    from . import sddl
+    names = _sid_name_map(s)
+    out = []
+    for row in s.get("ACLs (raw)", []):
+        if not (row.get("kind") == "domain" or _dn_is_domain_head(row.get("dn", ""))):
+            continue
+        # aggregate replication rights per holder across that object's ACEs
+        repl = {}
+        for ace in row.get("_dangerous", []):
+            sid = ace.get("sid")
+            if _is_default_holder(sid, names.get(sid, (None,))[0]):
+                continue
+            rname = ace.get("objectRightName", "")
+            flagset = repl.setdefault(sid, {"gaa": False, "getchanges": set(), "generic": False})
+            if "GenericAll" in ace.get("rights", []):
+                flagset["generic"] = True
+            if ace.get("objectType") in sddl.DCSYNC_GUIDS:
+                flagset["getchanges"].add(ace.get("objectType"))
+        for sid, f in repl.items():
+            has_dcsync = f["generic"] or (f["getchanges"] >= sddl.DCSYNC_GUIDS)
+            if has_dcsync:
+                nm, kind = names.get(sid, (sid, "?"))
+                out.append({"principal": nm or sid, "sid": sid, "kind": kind,
+                            "via": "GenericAll" if f["generic"] else "DS-Replication-Get-Changes(+All)"})
+    return out
+
+
+def _r_acl_adminsdholder(s):
+    """Non-default principals with takeover rights on AdminSDHolder (its ACL is stamped onto every
+    protected account by SDProp, so control here = persistent control of all admins)."""
+    names = _sid_name_map(s)
+    out = []
+    for row in s.get("ACLs (raw)", []):
+        if not (row.get("kind") == "adminsdholder"
+                or str(row.get("dn", "")).lower().startswith("cn=adminsdholder,")):
+            continue
+        for ace in row.get("_dangerous", []):
+            sid = ace.get("sid")
+            nm = names.get(sid, (None,))[0]
+            if _is_default_holder(sid, nm):
+                continue
+            out.append({"principal": nm or sid, "sid": sid, "rights": ", ".join(ace.get("rights", []))})
+    return out
+
+
+def _r_acl_priv_object(s):
+    """Non-default principals holding takeover rights (GenericAll/WriteDacl/WriteOwner/GenericWrite/
+    unscoped WriteProperty / force-password-reset) over a privileged object (a protected group,
+    an admin account, or any nested-privileged principal)."""
+    names = _sid_name_map(s)
+    sens = _sensitive_dns(s)
+    out = []
+    seen = set()
+    for row in s.get("ACLs (raw)", []):
+        dn = str(row.get("dn", "")).lower()
+        if dn not in sens:
+            continue
+        for ace in row.get("_dangerous", []):
+            sid = ace.get("sid")
+            nm = names.get(sid, (None,))[0]
+            if _is_default_holder(sid, nm):
+                continue
+            rights = ace.get("rights", [])
+            # on a privileged object even force-password-reset counts; dedupe principal->object
+            key = (sid, dn)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"principal": nm or sid, "kind": names.get(sid, (None, "?"))[1],
+                        "overObject": row.get("object"), "rights": ", ".join(rights)})
+    return out[:500]
+
+
 _RULES = [
     ("AD-001", "KRBTGT password not rotated (>180 days)", "critical", "Kerberos",
      "T1558.001 (Golden Ticket)",
@@ -449,6 +590,27 @@ _RULES = [
      "A DC that still accepts RC4/DES issues weak tickets that accelerate Kerberoasting/offline "
      "cracking against the domain.",
      _r_dc_weak_enc),
+    ("AD-032", "DCSync rights held by a non-default principal", "critical", "ACL / Permissions",
+     "T1003.006 (DCSync)",
+     "Remove DS-Replication-Get-Changes / -All (and any GenericAll) on the domain head from every "
+     "principal except Domain Controllers, Domain/Enterprise Admins and Administrators.",
+     "A principal with both replication rights (or GenericAll) on the domain object can DCSync every "
+     "account's hash, including krbtgt -> full domain compromise from a single delegated ACL.",
+     _r_acl_dcsync),
+    ("AD-033", "Dangerous rights on AdminSDHolder", "critical", "ACL / Permissions",
+     "T1098 / T1222",
+     "Remove GenericAll/WriteDacl/WriteOwner/GenericWrite on CN=AdminSDHolder from non-default "
+     "principals; SDProp re-stamps this ACL onto every protected account hourly.",
+     "AdminSDHolder's ACL is propagated to all protected (adminCount=1) accounts by SDProp, so "
+     "takeover rights here are persistent, self-healing control over every privileged account.",
+     _r_acl_adminsdholder),
+    ("AD-034", "Non-default principal has control over a privileged object", "high",
+     "ACL / Permissions", "T1098 (Account Manipulation)",
+     "Audit and remove GenericAll/WriteDacl/WriteOwner/GenericWrite (and force-password-reset) held "
+     "by non-default principals over protected groups and admin accounts.",
+     "A non-default principal with takeover rights over a privileged group or admin account can add "
+     "itself, reset the password, or rewrite the ACL to escalate to that privilege.",
+     _r_acl_priv_object),
 ]
 
 
@@ -466,15 +628,19 @@ def analyze(sections: dict) -> list[Finding]:
 
 
 def posture_score(findings: list[Finding]) -> int:
-    """100 = clean. Each finding subtracts a weighted penalty (capped), scaled by how many
-    objects it hits (saturating) so one huge finding doesn't zero the score by itself."""
-    penalty = 0.0
+    """100 = clean. Multiplicative 'defense-erosion' model: each finding removes a fraction of the
+    *remaining* posture, so impact compounds but saturates — ten mediums never equal a wall of
+    criticals, and the score trends toward (but never reaches) 0 as issues pile up rather than
+    flooring there the moment a few serious findings fire. A finding that hits many objects erodes
+    slightly more (saturating at +50%). Score = 100 * product(1 - impact_i)."""
+    remaining = 1.0
     for f in findings:
-        w = _SEV_WEIGHT.get(f.severity, 0)
-        # saturating scale: 1 object = 1.0x, grows slowly with count, cap 2x
+        p = _SEV_IMPACT.get(f.severity, 0.0)
+        if not p:
+            continue
         scale = 1.0 + min(0.5, (f.count - 1) * 0.02) if f.count else 1.0
-        penalty += w * scale
-    return max(0, round(100 - min(penalty, 100)))
+        remaining *= (1.0 - min(0.95, p * scale))
+    return max(0, round(100 * remaining))
 
 
 def severity_counts(findings: list[Finding]) -> dict:

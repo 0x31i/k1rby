@@ -368,6 +368,24 @@ try {
     $sprc.Cookie = $ck
   }
 } catch { W "ACLs failed: $($_.Exception.Message)" }
+# domain head + AdminSDHolder SDs (BASE scope) -> DCSync (SI000021) and AdminSDHolder ACL findings.
+# Tagged with 'kind' so the off-host analyzer knows which object each blob belongs to.
+foreach ($tgt in @(
+    @{ dn = $Base; kind = 'domain' },
+    @{ dn = "CN=AdminSDHolder,CN=System,$Base"; kind = 'adminsdholder' })) {
+  try {
+    $breq = New-Object System.DirectoryServices.Protocols.SearchRequest($tgt.dn,
+              '(objectClass=*)', $SC::Base, @('nTSecurityDescriptor'))
+    [void]$breq.Controls.Add((New-Object System.DirectoryServices.Protocols.SecurityDescriptorFlagControl($sdMask)))
+    $bresp = $conn.SendRequest($breq)
+    foreach ($e in $bresp.Entries) {
+      if ($e.Attributes.Contains('nTSecurityDescriptor')) {
+        $bytes = $e.Attributes['nTSecurityDescriptor'].GetValues([byte[]])[0]
+        [void]$acls.Add([ordered]@{ _dn = [string]$e.DistinguishedName; kind = $tgt.kind; sd = [Convert]::ToBase64String($bytes) })
+      }
+    }
+  } catch { W "ACL $($tgt.kind) failed: $($_.Exception.Message)" }
+}
 $dump.acls = $acls
 W "ACLs (SD blobs): $($acls.Count)"
 
